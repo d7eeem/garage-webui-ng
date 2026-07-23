@@ -202,6 +202,24 @@ $ cd backend
 $ pnpm run dev:server
 ```
 
+### Testing
+
+Run the frontend test suite, typecheck, and lint:
+
+```sh
+$ pnpm run test
+$ pnpm run typecheck
+$ pnpm run lint
+```
+
+Run the backend test suite:
+
+```sh
+$ cd backend && go test ./...
+```
+
+All of the above run in CI on every pull request.
+
 ## Troubleshooting
 
 Make sure you are using the latest version of Garage. If the data cannot be loaded, please check whether your instance of Garage has the admin API enabled and the ports are accessible.
