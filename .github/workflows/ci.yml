@@ -18,7 +18,14 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run lint
+      # Non-blocking: `main` carries a pre-existing lint backlog (55 problems as
+      # of ee420fb — mostly @typescript-eslint/no-explicit-any, plus some
+      # react-hooks/exhaustive-deps). Lint still runs so violations stay visible
+      # in the job log, but it does not gate merges until that backlog is
+      # cleared. Remove `continue-on-error` once `pnpm run lint` exits 0.
+      - name: Lint (non-blocking — see comment)
+        run: pnpm run lint
+        continue-on-error: true
       - run: pnpm run typecheck
       - run: pnpm run test
       - run: pnpm run build

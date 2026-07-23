@@ -220,6 +220,9 @@ $ cd backend && go test ./...
 
 All of the above run in CI on every pull request.
 
+> Note: `pnpm run lint` currently reports pre-existing violations and is
+> non-blocking in CI. New code should lint clean.
+
 ## Troubleshooting
 
 Make sure you are using the latest version of Garage. If the data cannot be loaded, please check whether your instance of Garage has the admin API enabled and the ports are accessible.
