@@ -26,3 +26,37 @@ type S3Web struct {
 	Index      string `json:"index" toml:"index"`
 	RootDomain string `json:"root_domain" toml:"root_domain"`
 }
+
+// ConfigResponse is the subset of the Garage configuration that is safe to
+// return to the browser. Secret-bearing fields (rpc_secret, admin_token,
+// metrics_token) are deliberately absent — the UI never needs them.
+type ConfigResponse struct {
+	S3API S3APIResponse `json:"s3_api"`
+	S3Web S3WebResponse `json:"s3_web"`
+}
+
+type S3APIResponse struct {
+	RootDomain string `json:"root_domain"`
+	S3Region   string `json:"s3_region"`
+}
+
+type S3WebResponse struct {
+	BindAddr   string `json:"bind_addr"`
+	RootDomain string `json:"root_domain"`
+	Index      string `json:"index"`
+}
+
+// NewConfigResponse projects a parsed Config onto the browser-safe subset.
+func NewConfigResponse(c Config) ConfigResponse {
+	return ConfigResponse{
+		S3API: S3APIResponse{
+			RootDomain: c.S3API.RootDomain,
+			S3Region:   c.S3API.S3Region,
+		},
+		S3Web: S3WebResponse{
+			BindAddr:   c.S3Web.BindAddr,
+			RootDomain: c.S3Web.RootDomain,
+			Index:      c.S3Web.Index,
+		},
+	}
+}
