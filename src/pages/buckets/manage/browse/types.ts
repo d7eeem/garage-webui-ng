@@ -1,7 +1,6 @@
 export type UseBrowserObjectOptions = Partial<{
   prefix: string;
   limit: number;
-  next: string;
 }>;
 
 export type GetObjectsResult = {

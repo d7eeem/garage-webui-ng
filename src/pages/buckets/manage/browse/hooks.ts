@@ -1,8 +1,8 @@
 import api from "@/lib/api";
 import {
+  useInfiniteQuery,
   useMutation,
   UseMutationOptions,
-  useQuery,
 } from "@tanstack/react-query";
 import {
   GetObjectsResult,
@@ -10,14 +10,21 @@ import {
   UseBrowserObjectOptions,
 } from "./types";
 
+export const getNextObjectPageParam = (lastPage: GetObjectsResult) =>
+  lastPage.nextToken ?? undefined;
+
 export const useBrowseObjects = (
   bucket: string,
   options?: UseBrowserObjectOptions
 ) => {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ["browse", bucket, options],
-    queryFn: () =>
-      api.get<GetObjectsResult>(`/browse/${bucket}`, { params: options }),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      api.get<GetObjectsResult>(`/browse/${bucket}`, {
+        params: { ...options, ...(pageParam ? { next: pageParam } : {}) },
+      }),
+    getNextPageParam: getNextObjectPageParam,
   });
 };
 
