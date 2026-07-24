@@ -148,6 +148,7 @@ Configurable envs:
 - `API_ADMIN_KEY`: Admin API key.
 - `S3_REGION`: S3 Region.
 - `S3_ENDPOINT_URL`: S3 Endpoint url.
+- `SESSION_COOKIE_SECURE`: Set to `true` to mark the session cookie as `Secure`. Enable this when serving the UI over HTTPS. Defaults to `false`, because browsers reject `Secure` cookies sent over plain HTTP.
 
 ### Authentication
 
@@ -178,6 +179,12 @@ webui:
 If you pass the variable through an `.env` file or `env_file:` instead, use the
 hash **exactly as `htpasswd` printed it** — no doubling. The escaping rule
 applies only to values written inline in a Compose `environment:` block.
+
+Login attempts are rate-limited to 10 per minute per client address.
+
+If you serve the UI over HTTPS — for example behind a reverse proxy that
+terminates TLS — also set `SESSION_COOKIE_SECURE: "true"` so the session cookie
+is never sent over an unencrypted connection.
 
 ### Running
 
