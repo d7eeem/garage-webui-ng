@@ -4,15 +4,78 @@ import (
 	"encoding/json"
 	"errors"
 	"khairul169/garage-webui/utils"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
 type Auth struct{}
 
+// loginLimiter throttles login attempts per client IP. It is deliberately
+// simple: a fixed window with a small allowance, enough to make online
+// password guessing impractical without adding a dependency or a background
+// sweeper goroutine.
+type loginLimiter struct {
+	mu       sync.Mutex
+	attempts map[string][]time.Time
+	limit    int
+	window   time.Duration
+}
+
+func newLoginLimiter(limit int, window time.Duration) *loginLimiter {
+	return &loginLimiter{
+		attempts: make(map[string][]time.Time),
+		limit:    limit,
+		window:   window,
+	}
+}
+
+// allow records an attempt for key and reports whether it is within the limit.
+func (l *loginLimiter) allow(key string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	cutoff := now.Add(-l.window)
+	recent := l.attempts[key][:0]
+	for _, t := range l.attempts[key] {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+
+	if len(recent) >= l.limit {
+		l.attempts[key] = recent
+		return false
+	}
+
+	l.attempts[key] = append(recent, now)
+	return true
+}
+
+var loginAttempts = newLoginLimiter(10, time.Minute)
+
+// clientIP extracts a rate-limiting key from the request. RemoteAddr is used
+// directly: this service is typically behind a reverse proxy, and trusting
+// X-Forwarded-For without knowing the proxy topology would let a client choose
+// its own rate-limit bucket.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
+	if !loginAttempts.allow(clientIP(r), time.Now()) {
+		utils.ResponseErrorStatus(w, errors.New("too many login attempts, try again later"), http.StatusTooManyRequests)
+		return
+	}
+
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -33,6 +96,11 @@ func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := utils.Session.Renew(r); err != nil {
+		utils.ResponseErrorStatus(w, errors.New("cannot start session"), 500)
+		return
+	}
+
 	utils.Session.Set(r, "authenticated", true)
 	utils.ResponseSuccess(w, map[string]bool{
 		"authenticated": true,
@@ -41,6 +109,7 @@ func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
 
 func (c *Auth) Logout(w http.ResponseWriter, r *http.Request) {
 	utils.Session.Clear(r)
+	_ = utils.Session.Renew(r)
 	utils.ResponseSuccess(w, true)
 }
 
