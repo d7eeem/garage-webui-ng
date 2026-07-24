@@ -25,6 +25,8 @@ COPY --from=alpine /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=ghcr.io/tarampampam/curl:8.6.0 /bin/curl /bin/curl
 COPY --from=backend /app/main /bin/main
 
+# NOTE: the scratch base image has no shell, so PORT cannot be interpolated
+# here. Containers started with a non-default PORT must override HEALTHCHECK.
 HEALTHCHECK --interval=5m --timeout=2s --retries=3 --start-period=15s CMD [ \
     "curl", "--fail", "http://127.0.0.1:3909" \
 ]

@@ -161,14 +161,23 @@ htpasswd -nbBC 10 "YOUR_USERNAME" "YOUR_PASSWORD"
 
 > If command 'htpasswd' is not found, install `apache2-utils` using your package manager.
 
-Then update your `docker-compose.yml`:
+Then update your `docker-compose.yml`. **Escape every `$` in the hash by
+doubling it (`$$`)** — Docker Compose treats a single `$` as the start of a
+variable reference and will silently strip parts of the hash, after which every
+login attempt fails with "invalid username or password":
 
 ```yml
 webui:
   ....
   environment:
-    AUTH_USER_PASS: "username:$2y$10$DSTi9o..."
+    # htpasswd output: username:$2y$10$DSTi9o...
+    # In compose, every $ becomes $$:
+    AUTH_USER_PASS: "username:$$2y$$10$$DSTi9o..."
 ```
+
+If you pass the variable through an `.env` file or `env_file:` instead, use the
+hash **exactly as `htpasswd` printed it** — no doubling. The escaping rule
+applies only to values written inline in a Compose `environment:` block.
 
 ### Running
 
