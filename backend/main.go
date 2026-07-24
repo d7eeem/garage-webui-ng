@@ -22,6 +22,12 @@ func main() {
 		log.Println("Cannot load garage config!", err)
 	}
 
+	if utils.GetEnv("AUTH_USER_PASS", "") == "" {
+		log.Println("WARNING: AUTH_USER_PASS is not set — the web UI and the " +
+			"Garage admin API proxy are accessible without authentication. " +
+			"Set AUTH_USER_PASS or restrict network access to this port.")
+	}
+
 	basePath := os.Getenv("BASE_PATH")
 	mux := http.NewServeMux()
 
