@@ -14,6 +14,7 @@ import {
 import { useBucketContext } from "../context";
 import ObjectActions from "./object-actions";
 import GotoTopButton from "@/components/ui/goto-top-btn";
+import Button from "@/components/ui/button";
 
 type Props = {
   prefix?: string;
@@ -22,10 +23,19 @@ type Props = {
 
 const ObjectList = ({ prefix, onPrefixChange }: Props) => {
   const { bucketName } = useBucketContext();
-  const { data, error, isLoading } = useBrowseObjects(bucketName, {
-    prefix,
-    limit: 1000,
-  });
+  const {
+    data,
+    error,
+    isLoading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useBrowseObjects(bucketName, { prefix, limit: 1000 });
+
+  const pages = data?.pages ?? [];
+  const prefixes = pages.flatMap((page) => page.prefixes);
+  const objects = pages.flatMap((page) => page.objects);
+  const currentPrefix = pages[0]?.prefix ?? "";
 
   const onObjectClick = (object: Object) => {
     window.open(API_URL + object.url + "?view=1", "_blank");
@@ -57,7 +67,7 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
                 </Alert>
               </td>
             </tr>
-          ) : !data?.prefixes?.length && !data?.objects?.length ? (
+          ) : !prefixes.length && !objects.length ? (
             <tr>
               <td className="text-center py-16" colSpan={3}>
                 No objects
@@ -65,7 +75,7 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
             </tr>
           ) : null}
 
-          {data?.prefixes.map((prefix) => (
+          {prefixes.map((prefix) => (
             <tr
               key={prefix}
               className="hover:bg-neutral/60 hover:text-neutral-content group"
@@ -88,7 +98,7 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
             </tr>
           ))}
 
-          {data?.objects.map((object, idx) => {
+          {objects.map((object, idx) => {
             const extIdx = object.objectKey.lastIndexOf(".");
             const filename =
               extIdx >= 0
@@ -119,15 +129,27 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
                   {dayjs(object.lastModified).fromNow()}
                 </td>
                 <ObjectActions
-                  prefix={data.prefix}
+                  prefix={currentPrefix}
                   object={object}
-                  end={
-                    idx >= data.objects.length - 2 && data.objects.length > 5
-                  }
+                  end={idx >= objects.length - 2 && objects.length > 5}
                 />
               </tr>
             );
           })}
+
+          {hasNextPage ? (
+            <tr>
+              <td colSpan={4} className="text-center">
+                <Button
+                  color="ghost"
+                  onClick={() => fetchNextPage()}
+                  disabled={isFetchingNextPage}
+                >
+                  {isFetchingNextPage ? "Loading…" : "Load more"}
+                </Button>
+              </td>
+            </tr>
+          ) : null}
         </Table.Body>
       </Table>
 

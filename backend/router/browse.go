@@ -26,11 +26,12 @@ func (b *Browse) GetObjects(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	bucket := r.PathValue("bucket")
 	prefix := query.Get("prefix")
-	continuationToken := query.Get("next")
 
-	limit, err := strconv.Atoi(query.Get("limit"))
-	if err != nil {
-		limit = 100
+	limit := normalizeListLimit(query.Get("limit"))
+
+	var continuationToken *string
+	if next := query.Get("next"); next != "" {
+		continuationToken = aws.String(next)
 	}
 
 	client, err := getS3Client(bucket)
@@ -43,8 +44,8 @@ func (b *Browse) GetObjects(w http.ResponseWriter, r *http.Request) {
 		Bucket:            aws.String(bucket),
 		Prefix:            aws.String(prefix),
 		Delimiter:         aws.String("/"),
-		MaxKeys:           aws.Int32(int32(limit)),
-		ContinuationToken: aws.String(continuationToken),
+		MaxKeys:           aws.Int32(limit),
+		ContinuationToken: continuationToken,
 	})
 
 	if err != nil {
@@ -228,45 +229,51 @@ func (b *Browse) DeleteObject(w http.ResponseWriter, r *http.Request) {
 
 	// Delete directory and its content
 	if isDirectory && recursive {
-		objects, err := client.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
-			Bucket: aws.String(bucket),
-			Prefix: aws.String(key),
-		})
+		var deleted int
+		var continuationToken *string
 
-		if err != nil {
-			utils.ResponseError(w, err)
-			return
-		}
-
-		if len(objects.Contents) == 0 {
-			utils.ResponseSuccess(w, true)
-			return
-		}
-
-		keys := make([]types.ObjectIdentifier, 0, len(objects.Contents))
-
-		for _, object := range objects.Contents {
-			keys = append(keys, types.ObjectIdentifier{
-				Key: object.Key,
+		for {
+			objects, err := client.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+				Bucket:            aws.String(bucket),
+				Prefix:            aws.String(key),
+				ContinuationToken: continuationToken,
 			})
+			if err != nil {
+				utils.ResponseError(w, err)
+				return
+			}
+
+			keys := make([]types.ObjectIdentifier, 0, len(objects.Contents))
+			for _, object := range objects.Contents {
+				keys = append(keys, types.ObjectIdentifier{Key: object.Key})
+			}
+
+			for _, batch := range chunkObjectIdentifiers(keys, maxListKeys) {
+				res, err := client.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
+					Bucket: aws.String(bucket),
+					Delete: &types.Delete{Objects: batch},
+				})
+				if err != nil {
+					utils.ResponseError(w, fmt.Errorf("cannot delete object: %w", err))
+					return
+				}
+				if len(res.Errors) > 0 {
+					utils.ResponseError(w, fmt.Errorf("cannot delete object: %v", res.Errors[0]))
+					return
+				}
+				deleted += len(res.Deleted)
+			}
+
+			if objects.IsTruncated == nil || !*objects.IsTruncated {
+				break
+			}
+			if objects.NextContinuationToken == nil {
+				break
+			}
+			continuationToken = objects.NextContinuationToken
 		}
 
-		res, err := client.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
-			Bucket: aws.String(bucket),
-			Delete: &types.Delete{Objects: keys},
-		})
-
-		if err != nil {
-			utils.ResponseError(w, fmt.Errorf("cannot delete object: %w", err))
-			return
-		}
-
-		if len(res.Errors) > 0 {
-			utils.ResponseError(w, fmt.Errorf("cannot delete object: %v", res.Errors[0]))
-			return
-		}
-
-		utils.ResponseSuccess(w, res)
+		utils.ResponseSuccess(w, map[string]int{"deleted": deleted})
 		return
 	}
 
@@ -282,6 +289,41 @@ func (b *Browse) DeleteObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.ResponseSuccess(w, res)
+}
+
+// maxListKeys is the S3 per-request cap for both ListObjectsV2 results and
+// DeleteObjects inputs. Garage follows the S3 API here.
+const maxListKeys = 1000
+
+// normalizeListLimit clamps a caller-supplied page size into the range the S3
+// API accepts. Invalid, absent, zero, or negative values fall back to 100;
+// anything above the S3 cap is clamped to it.
+func normalizeListLimit(raw string) int32 {
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit <= 0 {
+		return 100
+	}
+	if limit > maxListKeys {
+		return maxListKeys
+	}
+	return int32(limit)
+}
+
+// chunkObjectIdentifiers splits keys into batches no larger than the
+// DeleteObjects per-request cap.
+func chunkObjectIdentifiers(keys []types.ObjectIdentifier, size int) [][]types.ObjectIdentifier {
+	if size <= 0 {
+		size = maxListKeys
+	}
+	var batches [][]types.ObjectIdentifier
+	for start := 0; start < len(keys); start += size {
+		end := start + size
+		if end > len(keys) {
+			end = len(keys)
+		}
+		batches = append(batches, keys[start:end])
+	}
+	return batches
 }
 
 func getBucketCredentials(bucket string) (aws.CredentialsProvider, error) {
