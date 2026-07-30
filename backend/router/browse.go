@@ -1,7 +1,6 @@
 package router
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,7 +39,7 @@ func (b *Browse) GetObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	objects, err := client.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+	objects, err := client.ListObjectsV2(r.Context(), &s3.ListObjectsV2Input{
 		Bucket:            aws.String(bucket),
 		Prefix:            aws.String(prefix),
 		Delimiter:         aws.String("/"),
@@ -96,18 +95,19 @@ func (b *Browse) GetOneObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !view && !download && !thumbnail {
-		object, err := client.HeadObject(context.Background(), &s3.HeadObjectInput{
+		object, err := client.HeadObject(r.Context(), &s3.HeadObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(key),
 		})
 		if err != nil {
 			utils.ResponseError(w, err)
+			return
 		}
 		utils.ResponseSuccess(w, object)
 		return
 	}
 
-	object, err := client.GetObject(context.Background(), &s3.GetObjectInput{
+	object, err := client.GetObject(r.Context(), &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -199,7 +199,7 @@ func (b *Browse) PutObject(w http.ResponseWriter, r *http.Request) {
 		size = headers.Size
 	}
 
-	result, err := client.PutObject(context.Background(), &s3.PutObjectInput{
+	result, err := client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:        aws.String(bucket),
 		Key:           aws.String(key),
 		Body:          file,
@@ -233,7 +233,7 @@ func (b *Browse) DeleteObject(w http.ResponseWriter, r *http.Request) {
 		var continuationToken *string
 
 		for {
-			objects, err := client.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+			objects, err := client.ListObjectsV2(r.Context(), &s3.ListObjectsV2Input{
 				Bucket:            aws.String(bucket),
 				Prefix:            aws.String(key),
 				ContinuationToken: continuationToken,
@@ -249,7 +249,7 @@ func (b *Browse) DeleteObject(w http.ResponseWriter, r *http.Request) {
 			}
 
 			for _, batch := range chunkObjectIdentifiers(keys, maxListKeys) {
-				res, err := client.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
+				res, err := client.DeleteObjects(r.Context(), &s3.DeleteObjectsInput{
 					Bucket: aws.String(bucket),
 					Delete: &types.Delete{Objects: batch},
 				})
@@ -278,7 +278,7 @@ func (b *Browse) DeleteObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete single object
-	res, err := client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
+	res, err := client.DeleteObject(r.Context(), &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -345,6 +345,7 @@ func getBucketCredentials(bucket string) (aws.CredentialsProvider, error) {
 	}
 
 	var key schema.KeyElement
+	var found bool
 
 	for _, k := range bucketData.Keys {
 		if !k.Permissions.Read || !k.Permissions.Write {
@@ -358,7 +359,16 @@ func getBucketCredentials(bucket string) (aws.CredentialsProvider, error) {
 		if err := json.Unmarshal(body, &key); err != nil {
 			return nil, err
 		}
+		found = true
 		break
+	}
+
+	if !found || key.AccessKeyID == "" || key.SecretAccessKey == "" {
+		return nil, fmt.Errorf(
+			"no access key with read and write permission is assigned to bucket %q; "+
+				"grant a key read+write access to this bucket in the Permissions tab",
+			bucket,
+		)
 	}
 
 	credential := credentials.NewStaticCredentialsProvider(key.AccessKeyID, key.SecretAccessKey, "")
