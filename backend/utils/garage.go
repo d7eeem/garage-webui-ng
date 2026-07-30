@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -19,6 +20,13 @@ type garage struct {
 }
 
 var Garage = &garage{}
+
+// adminHTTPClient is shared across all admin API calls so connections are
+// reused. The timeout bounds a Garage node that accepts connections but never
+// responds; without it a stalled node pins a handler goroutine forever.
+var adminHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
 
 func (g *garage) LoadConfig() error {
 	path := GetEnv("CONFIG_PATH", "/etc/garage.toml")
@@ -138,8 +146,7 @@ func (g *garage) Fetch(url string, options *FetchOptions) ([]byte, error) {
 		}
 	}
 
-	client := &http.Client{}
-	res, err := client.Do(req)
+	res, err := adminHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -150,17 +157,13 @@ func (g *garage) Fetch(url string, options *FetchOptions) ([]byte, error) {
 	if res.StatusCode != 200 {
 		body, err := io.ReadAll(res.Body)
 		if err != nil {
-			return nil, err
-		}
-
-		var data map[string]interface{}
-
-		if err := json.Unmarshal(body, &data); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("unexpected status code: %d (cannot read body: %w)", res.StatusCode, err)
 		}
 
 		message := fmt.Sprintf("unexpected status code: %d", res.StatusCode)
-		if data["message"] != nil {
+
+		var data map[string]interface{}
+		if err := json.Unmarshal(body, &data); err == nil && data["message"] != nil {
 			message = fmt.Sprintf("%v", data["message"])
 		}
 

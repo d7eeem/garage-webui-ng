@@ -1,8 +1,12 @@
 package utils
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,5 +58,67 @@ func TestLoadConfigParsesValidToml(t *testing.T) {
 
 	if got := Garage.Config.S3API.RootDomain; got != "s3.example.com" {
 		t.Errorf("Garage.Config.S3API.RootDomain = %q, want %q", got, "s3.example.com")
+	}
+}
+
+func TestFetchReturnsStatusCodeForNonJsonErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte("<html>bad gateway</html>"))
+	}))
+	defer server.Close()
+
+	t.Setenv("API_BASE_URL", server.URL)
+
+	_, err := Garage.Fetch("/anything", &FetchOptions{})
+	if err == nil {
+		t.Fatalf("Fetch() = nil error, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Errorf("Fetch() error = %q, want it to contain %q", err.Error(), "502")
+	}
+}
+
+func TestFetchReturnsApiMessageForJsonErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"message":"bucket not found"}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("API_BASE_URL", server.URL)
+
+	_, err := Garage.Fetch("/anything", &FetchOptions{})
+	if err == nil {
+		t.Fatalf("Fetch() = nil error, want non-nil")
+	}
+	if err.Error() != "bucket not found" {
+		t.Errorf("Fetch() error = %q, want %q", err.Error(), "bucket not found")
+	}
+}
+
+func TestFetchSucceeds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("API_BASE_URL", server.URL)
+
+	body, err := Garage.Fetch("/anything", &FetchOptions{})
+	if err != nil {
+		t.Fatalf("Fetch() error = %v, want nil", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(body, &data); err != nil {
+		t.Fatalf("failed to unmarshal response body: %v", err)
+	}
+	if ok, present := data["ok"]; !present || ok != true {
+		t.Errorf("response body = %v, want map containing ok=true", data)
 	}
 }
