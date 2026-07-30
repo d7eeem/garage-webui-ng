@@ -6,9 +6,15 @@ import (
 	"khairul169/garage-webui/schema"
 	"khairul169/garage-webui/utils"
 	"net/http"
+	"sync"
 )
 
 type Buckets struct{}
+
+// maxBucketInfoConcurrency bounds how many GetBucketInfo calls run at once.
+// Without a bound, a cluster with thousands of buckets fires one admin API
+// request per bucket simultaneously.
+const maxBucketInfoConcurrency = 8
 
 func (b *Buckets) GetAll(w http.ResponseWriter, r *http.Request) {
 	body, err := utils.Garage.Fetch("/v2/ListBuckets", &utils.FetchOptions{})
@@ -23,32 +29,37 @@ func (b *Buckets) GetAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch := make(chan schema.Bucket, len(buckets))
+	res := make([]schema.Bucket, len(buckets))
+	sem := make(chan struct{}, maxBucketInfoConcurrency)
+	var wg sync.WaitGroup
 
-	for _, bucket := range buckets {
-		go func() {
+	for i, bucket := range buckets {
+		wg.Add(1)
+		sem <- struct{}{}
+
+		go func(i int, bucket schema.GetBucketsRes) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			fallback := schema.Bucket{ID: bucket.ID, GlobalAliases: bucket.GlobalAliases}
+
 			body, err := utils.Garage.Fetch(fmt.Sprintf("/v2/GetBucketInfo?id=%s", bucket.ID), &utils.FetchOptions{})
-
 			if err != nil {
-				ch <- schema.Bucket{ID: bucket.ID, GlobalAliases: bucket.GlobalAliases}
+				res[i] = fallback
 				return
 			}
 
 			var data schema.Bucket
 			if err := json.Unmarshal(body, &data); err != nil {
-				ch <- schema.Bucket{ID: bucket.ID, GlobalAliases: bucket.GlobalAliases}
+				res[i] = fallback
 				return
 			}
 
 			data.LocalAliases = bucket.LocalAliases
-			ch <- data
-		}()
+			res[i] = data
+		}(i, bucket)
 	}
 
-	res := make([]schema.Bucket, 0, len(buckets))
-	for i := 0; i < len(buckets); i++ {
-		res = append(res, <-ch)
-	}
-
+	wg.Wait()
 	utils.ResponseSuccess(w, res)
 }
