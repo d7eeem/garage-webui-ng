@@ -14,7 +14,7 @@ export const useAuth = () => {
   });
   return {
     isLoading,
-    isEnabled: data?.enabled,
-    isAuthenticated: data?.authenticated,
+    isEnabled: data?.enabled ?? false,
+    isAuthenticated: data?.authenticated ?? false,
   };
 };
