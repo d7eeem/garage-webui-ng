@@ -40,7 +40,8 @@ const ManageBucketPage = () => {
   const { id } = useParams();
   const { data, error, isLoading, refetch } = useBucket(id);
 
-  const name = data?.globalAliases[0];
+  const name = data?.globalAliases?.[0];
+  const hasAlias = !!name;
 
   return (
     <>
@@ -64,6 +65,19 @@ const ManageBucketPage = () => {
 
       {data && (
         <div className="container">
+          {!hasAlias && (
+            <Alert
+              status="warning"
+              icon={<CircleXIcon />}
+              className="mb-4 items-start text-sm"
+            >
+              <span>
+                This bucket has no global alias. Object browsing is unavailable
+                until one is added — the storage API addresses buckets by alias.
+                Add an alias in the Overview tab.
+              </span>
+            </Alert>
+          )}
           <BucketContext.Provider
             value={{ bucket: data, refetch, bucketName: name || "" }}
           >
