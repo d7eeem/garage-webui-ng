@@ -9,6 +9,25 @@ type FetchOptions = Omit<RequestInit, "headers" | "body"> & {
 
 export const API_URL = BASE_PATH + "/api";
 
+/**
+ * Percent-encodes an object key for use in a `/browse/...` path.
+ *
+ * Each path segment is encoded individually so that `/` separators — which
+ * delimit S3 "directories" — stay literal, while `?`, `#`, `%`, spaces, and
+ * other structural characters inside a segment are escaped.
+ *
+ * The Go backend's counterpart is `browseObjectURL` in
+ * `backend/router/browse.go`. `encodeURIComponent` and Go's `url.PathEscape`
+ * are not byte-identical (they differ on `!'()*`), but both round-trip
+ * correctly through the server's `r.PathValue`, which is the only property
+ * that matters — do not try to make the two byte-identical.
+ */
+export const encodeObjectPath = (key: string) =>
+  key
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+
 export class APIError extends Error {
   status!: number;
 

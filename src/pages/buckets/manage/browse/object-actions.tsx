@@ -30,6 +30,7 @@ const ObjectActions = ({ prefix = "", object, end }: Props) => {
   });
 
   const onDownload = () => {
+    // object.url arrives percent-encoded from the API; do not re-encode.
     window.open(API_URL + object.url + "?dl=1", "_blank");
   };
 
