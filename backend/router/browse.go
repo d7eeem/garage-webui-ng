@@ -7,7 +7,9 @@ import (
 	"io"
 	"khairul169/garage-webui/schema"
 	"khairul169/garage-webui/utils"
+	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -73,7 +75,7 @@ func (b *Browse) GetObjects(w http.ResponseWriter, r *http.Request) {
 			ObjectKey:    &key,
 			LastModified: object.LastModified,
 			Size:         object.Size,
-			Url:          fmt.Sprintf("/browse/%s/%s", bucket, *object.Key),
+			Url:          browseObjectURL(bucket, *object.Key),
 		})
 	}
 
@@ -127,7 +129,7 @@ func (b *Browse) GetOneObject(w http.ResponseWriter, r *http.Request) {
 	keys := strings.Split(key, "/")
 
 	if download {
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", keys[len(keys)-1]))
+		w.Header().Set("Content-Disposition", contentDispositionAttachment(keys[len(keys)-1]))
 	} else if thumbnail {
 		body, err := io.ReadAll(object.Body)
 		if err != nil {
@@ -324,6 +326,33 @@ func chunkObjectIdentifiers(keys []types.ObjectIdentifier, size int) [][]types.O
 		batches = append(batches, keys[start:end])
 	}
 	return batches
+}
+
+// browseObjectURL builds the API path for an object, percent-encoding both the
+// bucket and the key so that keys containing '?', '#', '%', '+', or spaces
+// survive the round trip. Each path segment is escaped individually; the '/'
+// separators between segments stay literal so the {key...} wildcard still
+// matches them.
+func browseObjectURL(bucket, key string) string {
+	segments := strings.Split(key, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	return "/browse/" + url.PathEscape(bucket) + "/" + strings.Join(segments, "/")
+}
+
+// contentDispositionAttachment builds a Content-Disposition header value that
+// survives filenames containing spaces, quotes, semicolons, or non-ASCII
+// characters.
+func contentDispositionAttachment(filename string) string {
+	if disposition := mime.FormatMediaType("attachment", map[string]string{
+		"filename": filename,
+	}); disposition != "" {
+		return disposition
+	}
+	// FormatMediaType rejects values that are not valid UTF-8. Fall back to a
+	// percent-encoded RFC 5987 parameter.
+	return "attachment; filename*=UTF-8''" + url.PathEscape(filename)
 }
 
 func getBucketCredentials(bucket string) (aws.CredentialsProvider, error) {
