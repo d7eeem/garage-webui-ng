@@ -346,6 +346,7 @@ func getBucketCredentials(bucket string) (aws.CredentialsProvider, error) {
 	}
 
 	var key schema.KeyElement
+	var found bool
 
 	for _, k := range bucketData.Keys {
 		if !k.Permissions.Read || !k.Permissions.Write {
@@ -359,7 +360,16 @@ func getBucketCredentials(bucket string) (aws.CredentialsProvider, error) {
 		if err := json.Unmarshal(body, &key); err != nil {
 			return nil, err
 		}
+		found = true
 		break
+	}
+
+	if !found || key.AccessKeyID == "" || key.SecretAccessKey == "" {
+		return nil, fmt.Errorf(
+			"no access key with read and write permission is assigned to bucket %q; "+
+				"grant a key read+write access to this bucket in the Permissions tab",
+			bucket,
+		)
 	}
 
 	credential := credentials.NewStaticCredentialsProvider(key.AccessKeyID, key.SecretAccessKey, "")
