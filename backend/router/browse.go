@@ -102,6 +102,7 @@ func (b *Browse) GetOneObject(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			utils.ResponseError(w, err)
+			return
 		}
 		utils.ResponseSuccess(w, object)
 		return
