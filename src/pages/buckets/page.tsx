@@ -25,12 +25,14 @@ const BucketsPage = () => {
       const q = search.toLowerCase();
       buckets = buckets.filter(
         (bucket) =>
-          bucket.id.includes(q) ||
-          bucket.aliases.find((alias) => alias.includes(q))
+          bucket.id.toLowerCase().includes(q) ||
+          bucket.aliases.some((alias) => alias.toLowerCase().includes(q))
       );
     }
 
-    buckets = buckets.sort((a, b) => a.aliases[0].localeCompare(b.aliases[0]));
+    buckets = buckets.sort((a, b) =>
+      (a.aliases[0] ?? "").localeCompare(b.aliases[0] ?? "")
+    );
 
     return buckets;
   }, [data, search]);
@@ -52,7 +54,15 @@ const BucketsPage = () => {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-8 items-stretch mt-4 md:mt-8">
           {items?.map((bucket) => (
-            <BucketCard key={bucket.id} data={bucket} />
+            <BucketCard
+              key={bucket.id}
+              data={{
+                ...bucket,
+                aliases: bucket.aliases.length
+                  ? bucket.aliases
+                  : ["(no alias)"],
+              }}
+            />
           ))}
         </div>
       </div>
