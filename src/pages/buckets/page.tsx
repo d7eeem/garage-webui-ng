@@ -5,6 +5,22 @@ import BucketCard from "./components/bucket-card";
 import CreateBucketDialog from "./components/create-bucket-dialog";
 import { useMemo, useState } from "react";
 
+export const compareByFirstAlias = (
+  a: { aliases: string[] },
+  b: { aliases: string[] }
+) => (a.aliases[0] ?? "").localeCompare(b.aliases[0] ?? "");
+
+export const matchesBucketSearch = (
+  bucket: { id: string; aliases: string[] },
+  query: string
+) => {
+  const q = query.toLowerCase();
+  return (
+    bucket.id.toLowerCase().includes(q) ||
+    bucket.aliases.some((alias) => alias.toLowerCase().includes(q))
+  );
+};
+
 const BucketsPage = () => {
   const { data } = useBuckets();
   const [search, setSearch] = useState("");
@@ -22,17 +38,10 @@ const BucketsPage = () => {
       }) || [];
 
     if (search?.length > 0) {
-      const q = search.toLowerCase();
-      buckets = buckets.filter(
-        (bucket) =>
-          bucket.id.toLowerCase().includes(q) ||
-          bucket.aliases.some((alias) => alias.toLowerCase().includes(q))
-      );
+      buckets = buckets.filter((bucket) => matchesBucketSearch(bucket, search));
     }
 
-    buckets = buckets.sort((a, b) =>
-      (a.aliases[0] ?? "").localeCompare(b.aliases[0] ?? "")
-    );
+    buckets = buckets.sort(compareByFirstAlias);
 
     return buckets;
   }, [data, search]);
