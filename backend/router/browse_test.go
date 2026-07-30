@@ -2,10 +2,34 @@ package router
 
 import (
 	"fmt"
+	"mime"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
+// TestPathValueDecodesWildcard confirms the load-bearing assumption behind
+// this file's URL-encoding helpers: Go's net/http ServeMux (1.22+) decodes
+// the {key...} wildcard before handlers see it via r.PathValue. If this ever
+// stops being true, browseObjectURL and encodeObjectPath must be redesigned
+// to decode explicitly instead of relying on ServeMux to do it.
+func TestPathValueDecodesWildcard(t *testing.T) {
+	mux := http.NewServeMux()
+	var got string
+	mux.HandleFunc("GET /browse/{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
+		got = r.PathValue("key")
+	})
+
+	req := httptest.NewRequest("GET", "/browse/b/dir/report%20%233.pdf", nil)
+	mux.ServeHTTP(httptest.NewRecorder(), req)
+
+	if want := "dir/report #3.pdf"; got != want {
+		t.Errorf("PathValue(key) = %q, want %q", got, want)
+	}
+}
 
 func TestNormalizeListLimit(t *testing.T) {
 	tests := []struct {
@@ -122,6 +146,133 @@ func TestChunkObjectIdentifiers(t *testing.T) {
 			if *flat[i].Key != *keys[i].Key {
 				t.Errorf("flattened[%d] = %q, want %q", i, *flat[i].Key, *keys[i].Key)
 			}
+		}
+	})
+}
+
+// browseMuxKey routes an already-encoded /browse/{bucket}/{key...} path
+// through a mux matching the real route pattern (see router.go) and returns
+// the decoded key, mirroring the setup in TestPathValueDecodesWildcard. Used
+// by TestBrowseObjectURL to prove the encode/decode round trip.
+func browseMuxKey(t *testing.T, path string) string {
+	t.Helper()
+	mux := http.NewServeMux()
+	var got string
+	mux.HandleFunc("GET /browse/{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
+		got = r.PathValue("key")
+	})
+
+	req := httptest.NewRequest("GET", path, nil)
+	mux.ServeHTTP(httptest.NewRecorder(), req)
+	return got
+}
+
+func TestBrowseObjectURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		bucket string
+		key    string
+		want   string
+	}{
+		{name: "simple file", bucket: "b", key: "file.txt", want: "/browse/b/file.txt"},
+		{name: "nested path keeps the slash separator literal", bucket: "b", key: "dir/file.txt", want: "/browse/b/dir/file.txt"},
+		{name: "space and hash", bucket: "b", key: "report #3.pdf", want: "/browse/b/report%20%233.pdf"},
+		{name: "question mark", bucket: "b", key: "a?b.txt", want: "/browse/b/a%3Fb.txt"},
+		{name: "literal percent", bucket: "b", key: "100%.txt", want: "/browse/b/100%25.txt"},
+		// url.PathEscape leaves '+' literal in a path segment (it is only
+		// special in query strings), confirmed against the real function
+		// rather than assumed.
+		{name: "plus sign stays literal in a path segment", bucket: "b", key: "a+b.txt", want: "/browse/b/a+b.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := browseObjectURL(tt.bucket, tt.key)
+			if got != tt.want {
+				t.Errorf("browseObjectURL(%q, %q) = %q, want %q", tt.bucket, tt.key, got, tt.want)
+			}
+
+			// Round trip: the encoded URL, run through the real route
+			// pattern, must decode back to the original key. This is the
+			// assertion that actually proves the fix — it doesn't matter
+			// exactly which bytes browseObjectURL produces as long as the
+			// server's own mux recovers the original key from them.
+			decoded := browseMuxKey(t, tt.want)
+			if decoded != tt.key {
+				t.Errorf("round trip: PathValue(key) for %q = %q, want %q", tt.want, decoded, tt.key)
+			}
+		})
+	}
+}
+
+func TestContentDispositionAttachment(t *testing.T) {
+	t.Run("simple filename", func(t *testing.T) {
+		got := contentDispositionAttachment("file.txt")
+		if !strings.Contains(got, "attachment") || !strings.Contains(got, "file.txt") {
+			t.Errorf("contentDispositionAttachment(%q) = %q, want it to contain %q and %q", "file.txt", got, "attachment", "file.txt")
+		}
+	})
+
+	t.Run("space forces a quoted filename", func(t *testing.T) {
+		got := contentDispositionAttachment("my report.pdf")
+		if !strings.Contains(got, `"my report.pdf"`) {
+			t.Errorf(`contentDispositionAttachment("my report.pdf") = %q, want it to contain %q`, got, `"my report.pdf"`)
+		}
+	})
+
+	t.Run("embedded quote round-trips through ParseMediaType", func(t *testing.T) {
+		in := `a"b.txt`
+		got := contentDispositionAttachment(in)
+
+		_, params, err := mime.ParseMediaType(got)
+		if err != nil {
+			t.Fatalf("contentDispositionAttachment(%q) = %q, which failed to parse: %v", in, got, err)
+		}
+		if params["filename"] != in {
+			t.Errorf("contentDispositionAttachment(%q) = %q, parsed filename = %q, want %q", in, got, params["filename"], in)
+		}
+	})
+
+	t.Run("non-ASCII filename produces a parseable non-empty header", func(t *testing.T) {
+		in := "résumé.pdf"
+		got := contentDispositionAttachment(in)
+
+		if got == "" || !strings.HasPrefix(got, "attachment") {
+			t.Errorf("contentDispositionAttachment(%q) = %q, want a non-empty value starting with %q", in, got, "attachment")
+		}
+
+		// Go emits the RFC 2231 filename*=utf-8'' form here. The exact
+		// encoding is intentionally not pinned (see plan 006's notes on
+		// brittleness), but it must still parse and round-trip to the
+		// original filename.
+		_, params, err := mime.ParseMediaType(got)
+		if err != nil {
+			t.Fatalf("contentDispositionAttachment(%q) = %q, which failed to parse: %v", in, got, err)
+		}
+		if params["filename"] != in {
+			t.Errorf("contentDispositionAttachment(%q) parsed filename = %q, want %q", in, params["filename"], in)
+		}
+	})
+
+	t.Run("invalid UTF-8 still produces a non-empty attachment header", func(t *testing.T) {
+		// This is the input contentDispositionAttachment's fallback branch is
+		// written to guard against: mime.FormatMediaType is documented to
+		// return "" on a standard violation, and a non-UTF-8 filename was the
+		// motivating case. Empirically, on the Go stdlib version this repo
+		// builds with (verified by reading mime/mediatype.go), FormatMediaType
+		// never returns "" for a fixed, valid ("attachment", "filename")
+		// pair — it percent-encodes arbitrary byte values via RFC 2231
+		// instead — so this input exercises FormatMediaType's own byte-wise
+		// encoding, not the `disposition == ""` branch inside
+		// contentDispositionAttachment. The manual fallback is kept as cheap
+		// defensive coverage in case that stdlib behavior ever changes; this
+		// test pins the externally observable contract (non-empty, starts
+		// with "attachment") either way.
+		in := string([]byte{0xff, 0xfe})
+		got := contentDispositionAttachment(in)
+
+		if got == "" || !strings.HasPrefix(got, "attachment") {
+			t.Errorf("contentDispositionAttachment(%q) = %q, want a non-empty value starting with %q", in, got, "attachment")
 		}
 	})
 }

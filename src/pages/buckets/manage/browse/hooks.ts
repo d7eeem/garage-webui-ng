@@ -1,4 +1,4 @@
-import api from "@/lib/api";
+import api, { encodeObjectPath } from "@/lib/api";
 import {
   useInfiniteQuery,
   useMutation,
@@ -39,7 +39,9 @@ export const usePutObject = (
         formData.append("file", body.file);
       }
 
-      return api.put(`/browse/${bucket}/${body.key}`, { body: formData });
+      return api.put(`/browse/${bucket}/${encodeObjectPath(body.key)}`, {
+        body: formData,
+      });
     },
     ...options,
   });
@@ -51,7 +53,9 @@ export const useDeleteObject = (
 ) => {
   return useMutation({
     mutationFn: (data) =>
-      api.delete(`/browse/${bucket}/${data.key}`, {
+      // `bucket` is not encoded here: Garage bucket aliases are
+      // DNS-compatible names and never need percent-encoding.
+      api.delete(`/browse/${bucket}/${encodeObjectPath(data.key)}`, {
         params: { recursive: data.recursive },
       }),
     ...options,

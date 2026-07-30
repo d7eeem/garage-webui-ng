@@ -38,6 +38,7 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
   const currentPrefix = pages[0]?.prefix ?? "";
 
   const onObjectClick = (object: Object) => {
+    // object.url arrives percent-encoded from the API; do not re-encode.
     window.open(API_URL + object.url + "?view=1", "_blank");
   };
 
@@ -175,6 +176,7 @@ const FilePreview = ({ ext, object }: FilePreviewProps) => {
 
   if (type === "image") {
     const thumbnailSupport = ["jpg", "jpeg", "png", "gif"].includes(ext || "");
+    // object.url arrives percent-encoded from the API; do not re-encode.
     return (
       <img
         src={API_URL + object.url + (thumbnailSupport ? "?thumb=1" : "?view=1")}
