@@ -48,7 +48,11 @@ const KeysPage = () => {
     }
 
     const q = search.toLowerCase();
-    return data?.filter((item) => item.id.includes(q) || item.name.includes(q));
+    return data?.filter(
+      (item) =>
+        item.id.toLowerCase().includes(q) ||
+        (item.name ?? "").toLowerCase().includes(q)
+    );
   }, [data, search]);
 
   return (

@@ -1,9 +1,13 @@
 package router
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"khairul169/garage-webui/utils"
 )
 
 func TestLoginLimiterAllowsUpToLimit(t *testing.T) {
@@ -85,5 +89,47 @@ func TestClientIPStripsPort(t *testing.T) {
 				t.Errorf("clientIP() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGetStatusAuthDisabled(t *testing.T) {
+	t.Setenv("AUTH_USER_PASS", "")
+	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
+	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).GetStatus))
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/status", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	var body struct {
+		Enabled       bool `json:"enabled"`
+		Authenticated bool `json:"authenticated"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Enabled != false || body.Authenticated != true {
+		t.Errorf("got enabled=%v authenticated=%v; want false,true", body.Enabled, body.Authenticated)
+	}
+}
+
+func TestGetStatusAuthEnabledNoSession(t *testing.T) {
+	t.Setenv("AUTH_USER_PASS", "u:hash")
+	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
+	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).GetStatus))
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/status", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	var body struct {
+		Enabled       bool `json:"enabled"`
+		Authenticated bool `json:"authenticated"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Enabled != true || body.Authenticated != false {
+		t.Errorf("got enabled=%v authenticated=%v; want true,false", body.Enabled, body.Authenticated)
 	}
 }
