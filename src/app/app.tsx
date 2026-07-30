@@ -4,6 +4,7 @@ import { Toaster } from "sonner";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
 import ThemeProvider from "@/components/containers/theme-provider";
+import ErrorBoundary from "@/components/containers/error-boundary";
 import "./styles.css";
 
 const App = () => {
@@ -12,7 +13,9 @@ const App = () => {
   return (
     <PageContextProvider>
       <QueryClientProvider client={queryClient}>
-        <Router />
+        <ErrorBoundary>
+          <Router />
+        </ErrorBoundary>
       </QueryClientProvider>
       <Toaster richColors />
       <ThemeProvider />
