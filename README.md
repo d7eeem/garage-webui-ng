@@ -1,302 +1,261 @@
-# Garage Web UI
+<div align="center">
 
-[![image](misc/img/garage-webui.png)](misc/img/garage-webui.png)
+<img src="src/assets/garage-logo.svg" alt="Garage WebUI-NG" width="120" />
 
-A simple admin web UI for [Garage](https://garagehq.deuxfleurs.fr/), a self-hosted, S3-compatible, distributed object storage service.
+# Garage WebUI-NG
 
-[ [Screenshots](misc/SCREENSHOTS.md) | [Install Garage](https://garagehq.deuxfleurs.fr/documentation/quick-start/) | [Garage Git](https://git.deuxfleurs.fr/Deuxfleurs/garage) ]
+**A modern, production-ready admin dashboard for [Garage](https://garagehq.deuxfleurs.fr/) — the self-hosted, S3-compatible, distributed object storage service.**
 
-## Features
+[![CI](https://github.com/d7eeem/garage-webui-ng/actions/workflows/ci.yml/badge.svg)](https://github.com/d7eeem/garage-webui-ng/actions/workflows/ci.yml)
+[![Docker Publish](https://github.com/d7eeem/garage-webui-ng/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/d7eeem/garage-webui-ng/actions/workflows/docker-publish.yml)
+[![GHCR](https://img.shields.io/badge/ghcr.io-garage--webui--ng-2496ED?logo=docker&logoColor=white)](https://github.com/d7eeem/garage-webui-ng/pkgs/container/garage-webui-ng)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](backend/go.mod)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](package.json)
 
-- Garage health status
-- Cluster & layout management
-- Create, update, or view bucket information
-- Integrated objects/bucket browser
-- Create & assign access keys
+[Features](#-key-features) · [Screenshots](#-screenshots) · [Quick Start](#-installation) · [Configuration](#-configuration) · [API](#-api) · [Roadmap](#-roadmap)
 
-## Installation
+<img src="docs/screenshots/dashboard-dark.png" alt="Garage WebUI-NG dashboard" width="860" />
 
-The Garage Web UI is available as a single executable binary and docker image. You can install it using the command line or with Docker Compose.
+</div>
 
-### Docker CLI
+---
 
-```sh
-$ docker run -p 3909:3909 -v ./garage.toml:/etc/garage.toml:ro --restart unless-stopped --name garage-webui khairul169/garage-webui:latest
-```
+## 📖 Overview
 
-### Docker Compose
+**Garage WebUI-NG** is the next-generation web console for operating a [Garage](https://garagehq.deuxfleurs.fr/) cluster. It ships as a **single, self-contained binary** (a Go backend that embeds the compiled React frontend) or as a **~12 MB non-root Docker image**, and it holds no state of its own — it is a thin, secure gateway to your existing Garage cluster.
 
-If you install Garage using Docker, you can install this web UI alongside Garage as follows:
+Point it at a running Garage node and you get a clean dashboard for cluster health, buckets, objects, access keys, static-website hosting, and object sharing — with optional authentication, a read-only operator role, and a structured audit trail.
 
-```yml
-services:
-  garage:
-    image: dxflrs/garage:v2.0.0
-    container_name: garage
-    volumes:
-      - ./garage.toml:/etc/garage.toml
-      - ./meta:/var/lib/garage/meta
-      - ./data:/var/lib/garage/data
-    restart: unless-stopped
-    ports:
-      - 3900:3900
-      - 3901:3901
-      - 3902:3902
-      - 3903:3903
+## ✨ Key Features
 
-  webui:
-    image: khairul169/garage-webui:latest
-    container_name: garage-webui
-    restart: unless-stopped
-    volumes:
-      - ./garage.toml:/etc/garage.toml:ro
-    ports:
-      - 3909:3909
-    environment:
-      API_BASE_URL: "http://garage:3903"
-      S3_ENDPOINT_URL: "http://garage:3900"
-```
+- **📊 Live dashboard** — cluster health, node/partition status, total usage, and a live metrics panel (S3 requests, errors, block I/O) parsed from Garage's Prometheus endpoint.
+- **🗂️ Bucket management** — create, inspect, and configure buckets: global/local aliases, quotas, and **static website hosting** with a correct, copy-ready public URL.
+- **📁 Object browser** — navigate prefixes, upload and download objects, create folders, **bulk-delete** selections, and clean up orphaned **multipart uploads**.
+- **🔗 Object sharing** — generate expiring **presigned links** for private objects and surface public website URLs, all from one dialog.
+- **🔑 Access keys** — create, inspect, and assign keys to buckets with fine-grained read / write / owner permissions.
+- **🔐 Authentication & roles** — optional session auth with bcrypt-hashed credentials, **multiple users**, and a fail-closed **read-only viewer role**.
+- **📝 Audit log** — every state-changing request is emitted as a structured JSON line to stdout (who / what / path / status), including denied writes.
+- **🎨 Themed UI** — 10 built-in light/dark themes, fully responsive down to mobile.
+- **🚀 Production-ready** — multi-arch (amd64/arm64) image, non-root runtime, healthcheck, graceful shutdown, and GHCR publishing out of the box.
 
-### Without Docker
+## 📸 Screenshots
 
-Get the latest binary from the [release page](https://github.com/khairul169/garage-webui/releases/latest) according to your OS architecture. For example:
+<div align="center">
 
-```sh
-$ wget -O garage-webui https://github.com/khairul169/garage-webui/releases/download/1.1.0/garage-webui-v1.1.0-linux-amd64
-$ chmod +x garage-webui
-$ sudo cp garage-webui /usr/local/bin
-```
+| Dashboard | Buckets |
+|:---:|:---:|
+| [![Dashboard](docs/screenshots/dashboard-light.png)](docs/screenshots/dashboard-light.png) | [![Buckets](docs/screenshots/buckets-light.png)](docs/screenshots/buckets-light.png) |
+| **Object browser** | **Bucket overview** |
+| [![Browse](docs/screenshots/browse-light.png)](docs/screenshots/browse-light.png) | [![Overview](docs/screenshots/bucket-overview-light.png)](docs/screenshots/bucket-overview-light.png) |
+| **Access keys** | **Cluster & layout** |
+| [![Keys](docs/screenshots/keys-light.png)](docs/screenshots/keys-light.png) | [![Cluster](docs/screenshots/cluster-light.png)](docs/screenshots/cluster-light.png) |
 
-Run the program with specified `garage.toml` config path.
+**Share / export dialog** — presigned private links + public website URL
 
-```sh
-$ CONFIG_PATH=./garage.toml garage-webui
-```
+[![Share](docs/screenshots/share-export.png)](docs/screenshots/share-export.png)
 
-If you want to run the program at startup, you may want to create a systemd service.
+**Dark mode**
 
-```sh
-$ sudo nano /etc/systemd/system/garage-webui.service
-```
+| Dashboard | Object browser |
+|:---:|:---:|
+| [![Dashboard dark](docs/screenshots/dashboard-dark.png)](docs/screenshots/dashboard-dark.png) | [![Browse dark](docs/screenshots/browse-dark.png)](docs/screenshots/browse-dark.png) |
+
+**Mobile**
+
+<img src="docs/screenshots/mobile-dashboard.png" width="220" /> <img src="docs/screenshots/mobile-buckets.png" width="220" /> <img src="docs/screenshots/mobile-browse.png" width="220" />
+
+</div>
+
+## 🏗️ Architecture
+
+Garage WebUI-NG is a **stateless gateway** between your browser and two Garage APIs.
 
 ```
-[Unit]
-Description=Garage Web UI
-After=network.target
-
-[Service]
-Environment="PORT=3919"
-Environment="CONFIG_PATH=/etc/garage.toml"
-ExecStart=/usr/local/bin/garage-webui
-Restart=always
-
-[Install]
-WantedBy=default.target
+          ┌──────────────────────────────────────────────┐
+          │            Garage WebUI-NG (1 binary)         │
+ Browser ─┤  React SPA  ─►  Go server                     ├─► Garage Admin API (v2)
+   (SPA)  │   (embedded)     ├─ session auth + roles      │      /v2/GetClusterStatus, …
+          │                  ├─ audit log (stdout)        │
+          │                  ├─ reverse proxy  ───────────┼─► Garage Admin API (catch-all)
+          │                  └─ S3 client ────────────────┼─► Garage S3 API
+          └──────────────────────────────────────────────┘      (object browse / share)
 ```
 
-Then reload and start the garage-webui service.
+- **Single artifact** — the Go binary embeds the built frontend via `//go:embed` (release builds only); the same code runs from the non-root Docker image.
+- **Admin API gateway** — a few explicit routes plus a catch-all reverse proxy forward any `/api/v2/…` request to Garage's Admin API with the admin token injected server-side. The token is **never** sent to the browser.
+- **S3 path** — object browsing/upload/download/sharing uses the AWS SDK v2 with per-bucket credentials fetched (and briefly cached) from the Admin API.
+- **Config reuse** — reads your existing `garage.toml` (`CONFIG_PATH`, default `/etc/garage.toml`) for endpoints and tokens; every value can be overridden by an environment variable.
 
-```sh
-$ sudo systemctl daemon-reload
-$ sudo systemctl enable --now garage-webui
-```
+See [CLAUDE.md](CLAUDE.md) for a deeper architecture reference.
 
-### Configuration
+## 🚀 Installation
 
-To simplify installation, the Garage Web UI uses values from the Garage configuration, such as `rpc_public_addr`, `admin.admin_token`, `s3_web.root_domain`, etc.
-
-Example content of `config.toml`:
-
-```toml
-metadata_dir = "/var/lib/garage/meta"
-data_dir = "/var/lib/garage/data"
-db_engine = "sqlite"
-metadata_auto_snapshot_interval = "6h"
-
-replication_factor = 3
-compression_level = 2
-
-rpc_bind_addr = "[::]:3901"
-rpc_public_addr = "localhost:3901" # Required
-rpc_secret = "YOUR_RPC_SECRET_HERE"
-
-[s3_api]
-s3_region = "garage"
-api_bind_addr = "[::]:3900"
-root_domain = ".s3.domain.com"
-
-[s3_web] # Optional, if you want to expose bucket as web
-bind_addr = "[::]:3902"
-root_domain = ".web.domain.com"
-index = "index.html"
-
-[admin] # Required
-api_bind_addr = "[::]:3903"
-admin_token = "YOUR_ADMIN_TOKEN_HERE"
-metrics_token = "YOUR_METRICS_TOKEN_HERE"
-```
-
-However, if it fails to load, you can set `API_BASE_URL` & `API_ADMIN_KEY` environment variables instead.
-
-### Environment Variables
-
-Configurable envs:
-
-- `CONFIG_PATH`: Path to the Garage `config.toml` file. Defaults to `/etc/garage.toml`.
-- `BASE_PATH`: Base path or prefix for Web UI.
-- `API_BASE_URL`: Garage admin API endpoint URL.
-- `API_ADMIN_KEY`: Admin API key.
-- `S3_REGION`: S3 Region.
-- `S3_ENDPOINT_URL`: S3 Endpoint url.
-- `S3_PUBLIC_ENDPOINT_URL`: Publicly-reachable S3 API endpoint used to sign
-  object **share links**. Required for the "private link" share option to appear;
-  when unset, sharing falls back to website URLs only. Must be reachable by
-  whoever receives a link (the internal `S3_ENDPOINT_URL` — e.g. `http://garage:3900`
-  in Docker — is not).
-- `SESSION_COOKIE_SECURE`: Set to `true` to mark the session cookie as `Secure`. Enable this when serving the UI over HTTPS. Defaults to `false`, because browsers reject `Secure` cookies sent over plain HTTP.
-
-### Authentication
-
-Enable authentication by setting the `AUTH_USER_PASS` environment variable to one or more `username:password_hash` entries, where each `password_hash` is a bcrypt hash of that user's password. A single entry (`username:password_hash`) gives one shared login, same as before. For multiple individual logins, separate entries with a comma: `alice:hash1,bob:hash2`. Any listed username/password pair is accepted.
-
-#### Roles
-
-Every user in `AUTH_USER_PASS` logs in as an **admin**, with full read/write
-access, same as before. Optionally set `AUTH_VIEWER_USER_PASS` — same
-`username:password_hash` / comma-separated multi-user format — to add
-**viewer** accounts: read-only sessions that can browse buckets, objects,
-keys and cluster status, but get a 403 on every mutation (create/delete
-bucket, upload/delete objects, allow/deny keys, assign nodes or apply/revert
-a layout change, and revealing a key's secret access key). The UI hides the
-corresponding controls for a viewer session, but the server-side check is
-what actually enforces it.
-
-> **This is a guardrail, not an isolation boundary.** The server still holds
-> the full Garage admin token and proxies every request with it; the viewer
-> role only restricts which requests your own session is allowed to make. It
-> does not scope access by bucket — a viewer sees everything, just can't
-> change it. Use it to hand a look-but-don't-touch session to a semi-trusted
-> operator, not as a security boundary between mutually distrusting parties.
-
-Generate a username and password hash using the following command (repeat per user, admin or viewer):
+### Docker (quickest)
 
 ```bash
-htpasswd -nbBC 10 "YOUR_USERNAME" "YOUR_PASSWORD"
+docker run -d --name garage-webui-ng \
+  -p 3909:3909 \
+  -v ./garage.toml:/etc/garage.toml:ro \
+  -e API_BASE_URL=http://garage:3903 \
+  -e S3_ENDPOINT_URL=http://garage:3900 \
+  --restart unless-stopped \
+  ghcr.io/d7eeem/garage-webui-ng:latest
 ```
 
-> If command 'htpasswd' is not found, install `apache2-utils` using your package manager.
+Then open **http://localhost:3909**.
 
-Then update your `docker-compose.yml`. **Escape every `$` in the hash by
-doubling it (`$$`)** — Docker Compose treats a single `$` as the start of a
-variable reference and will silently strip parts of the hash, after which every
-login attempt fails with "invalid username or password":
+### Prebuilt binary
 
-```yml
-webui:
-  ....
-  environment:
-    # htpasswd output: username:$2y$10$DSTi9o...
-    # In compose, every $ becomes $$:
-    AUTH_USER_PASS: "username:$$2y$$10$$DSTi9o..."
+Download the `linux/amd64` or `linux/arm64` binary from the [latest release](https://github.com/d7eeem/garage-webui-ng/releases) and run it next to your Garage node:
+
+```bash
+chmod +x garage-webui-ng-linux-amd64
+API_BASE_URL=http://127.0.0.1:3903 S3_ENDPOINT_URL=http://127.0.0.1:3900 ./garage-webui-ng-linux-amd64
 ```
 
-For multiple users, join their `username:hash` entries with a comma (each hash
-is still `$$`-doubled the same way):
+## 🐳 Docker Deployment
 
-```yml
-webui:
-  ....
-  environment:
-    AUTH_USER_PASS: "alice:$$2y$$10$$DSTi9o...,bob:$$2y$$10$$AbCdEf..."
+The image is multi-arch (`linux/amd64`, `linux/arm64`), runs as a **non-root** user, exposes a **healthcheck**, and shuts down gracefully on `SIGTERM`.
+
+```bash
+docker pull ghcr.io/d7eeem/garage-webui-ng:latest
 ```
 
-To add read-only viewers, set `AUTH_VIEWER_USER_PASS` the same way — it uses
-the same format and escaping rules as `AUTH_USER_PASS`, just for a separate
-set of accounts:
+Available tags: `latest`, `2`, `2.0`, `2.0.0`, and `sha-<commit>`.
 
-```yml
-webui:
-  ....
-  environment:
-    AUTH_USER_PASS: "alice:$$2y$$10$$DSTi9o..."
-    AUTH_VIEWER_USER_PASS: "carol:$$2y$$10$$ZyXwVu..."
+## 🧩 Docker Compose Deployment
+
+A production Compose stack (Garage + WebUI-NG) is provided. Copy the example env file and start it:
+
+```bash
+cp .env.example .env       # edit as needed
+docker compose up -d
 ```
 
-If you pass the variable through an `.env` file or `env_file:` instead, use the
-hash(es) **exactly as `htpasswd` printed them** — no doubling. The escaping rule
-applies only to values written inline in a Compose `environment:` block.
+`docker-compose.yml` includes named volumes, restart policies, healthchecks, JSON log rotation, environment interpolation from `.env`, and optional Traefik reverse-proxy labels. See [`docker-compose.yml`](docker-compose.yml).
 
-Login attempts are rate-limited to 10 per minute per client address.
+## ⚙️ Configuration
 
-If you serve the UI over HTTPS — for example behind a reverse proxy that
-terminates TLS — also set `SESSION_COOKIE_SECURE: "true"` so the session cookie
-is never sent over an unencrypted connection.
+Garage WebUI-NG reads your `garage.toml` and lets every setting be overridden by an environment variable. A full reference lives in [`.env.example`](.env.example).
 
-### Audit log
+### Environment variables
 
-The server emits a structured JSON audit line to **stdout** for every
-state-changing request (`POST`/`PUT`/`DELETE`/`PATCH`), including denied ones —
-for example `{"audit":true,"ts":"...","user":"alice","method":"DELETE","path":"/browse/my-bucket/report.pdf","status":200}`.
-Each line records the logged-in `user` (or `-` when unauthenticated), the HTTP
-`method`, `path`, and result `status`. Read requests (`GET`/`HEAD`/`OPTIONS`)
-are not logged, to keep the signal clear. There is no configuration and no
-in-app store — collect the lines with whatever log pipeline you already use.
+| Variable | Default | Description |
+|---|---|---|
+| `API_BASE_URL` | from `garage.toml` | Garage **Admin API** endpoint (cluster/bucket/key management). |
+| `S3_ENDPOINT_URL` | from `garage.toml` | Garage **S3 API** endpoint (object browse/upload/download). |
+| `S3_PUBLIC_ENDPOINT_URL` | *(unset)* | Public S3 endpoint the browser can reach — enables **presigned share links**. |
+| `S3_REGION` | `garage` | S3 region name. |
+| `CONFIG_PATH` | `/etc/garage.toml` | Path to the Garage config file to read. |
+| `HOST` | `0.0.0.0` | Address the server binds to. |
+| `PORT` | `3909` | Port the server listens on. |
+| `BASE_PATH` | *(unset)* | Mount the UI under a path prefix (e.g. `/garage`). |
+| `AUTH_USER_PASS` | *(unset)* | `user:bcrypt-hash` (comma-separated for multiple users). Enables auth. |
+| `AUTH_VIEWER_USER_PASS` | *(unset)* | Read-only viewer accounts, same format. |
+| `SESSION_COOKIE_SECURE` | `false` | Send the session cookie only over HTTPS. |
 
-### Running
+> **Note:** if neither `AUTH_USER_PASS` nor `AUTH_VIEWER_USER_PASS` is set, the UI **and** the admin-token-injecting proxy are open — rely on network isolation, or enable authentication.
 
-Once your instance of Garage Web UI is started, you can open the web UI at http://your-ip:3909. You can place it behind a reverse proxy to secure it with SSL.
+## 🖱️ Usage
 
-## Development
+1. Open the UI and land on the **Dashboard** for cluster health and live metrics.
+2. Use **Cluster** to review nodes, capacity, and the layout.
+3. Under **Buckets**, create a bucket, assign an alias, set quotas, or enable website hosting.
+4. Open a bucket's **Browse** tab to manage objects; use **Keys** to mint and assign access keys.
 
-This project is bootstrapped using TypeScript & React for the UI, and Go for backend. If you want to build it yourself or add additional features, follow these steps:
+### Importing / Exporting
 
-### Setup
+- **Import (upload)** — open a bucket → **Browse** → the **upload** button (top-right of the toolbar) to add objects, or **new folder** to create a prefix.
+- **Export (download / share)** — use the per-row **download** action, or the row menu → **Share** to generate an expiring **presigned link** (15 min → 7 days) or copy the object's **public website URL** when website hosting is enabled.
+- **Bulk operations** — select multiple objects to delete them in one request.
 
-```sh
-$ git clone https://github.com/khairul169/garage-webui.git
-$ cd garage-webui && pnpm install
-$ cd backend && pnpm install && cd ..
+## 🔌 API
+
+The backend serves everything under `/api`. It is primarily a **gateway to Garage's Admin API v2** (any unmatched `/api/v2/…` request is reverse-proxied with the admin token attached), plus first-class endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/config` | Browser-safe subset of the Garage config (no secrets). |
+| `GET` | `/api/metrics` | Parsed Prometheus metrics for the dashboard panel. |
+| `GET` | `/api/buckets` | Enriched bucket list. |
+| `GET/PUT/DELETE` | `/api/browse/{bucket}/{key...}` | List / upload / download / delete objects. |
+| `POST` | `/api/browse/{bucket}` | Bulk-delete selected objects. |
+| `GET/DELETE` | `/api/multipart/{bucket}` | List / abort orphaned multipart uploads. |
+| `GET` | `/api/share/{bucket}/{key...}?expires=` | Generate a presigned share link. |
+| `POST` | `/api/auth/login` · `/api/auth/logout` · `GET /api/auth/status` | Session auth. |
+
+## 🔒 Security
+
+- **Secrets stay server-side** — `rpc_secret`, `admin_token`, and `metrics_token` are never exposed to the browser (`/api/config` returns a filtered subset).
+- **Optional authentication** — session-based, bcrypt-hashed credentials via `AUTH_USER_PASS`; login is rate-limited and renews the session token.
+- **Read-only viewer role** — `AUTH_VIEWER_USER_PASS` grants a fail-closed role that can view but not mutate (and cannot reveal secret keys).
+- **Audit trail** — mutating requests (incl. denied ones) are logged as structured JSON to stdout for your log pipeline.
+- **Hardened runtime** — the Docker image runs as a non-root user with a minimal (distroless) base and no shell.
+
+> Because the open (no-auth) mode proxies the Garage admin token, **always** enable authentication or restrict network access when exposing the UI beyond localhost.
+
+## 🗺️ Roadmap
+
+- [x] Live cluster metrics panel
+- [x] Bulk object delete & multipart cleanup
+- [x] Presigned share links & correct website URLs
+- [x] Multi-user auth + read-only viewer role
+- [x] Structured audit log
+- [ ] **Full in-browser multipart upload** (resumable, large-file uploads)
+- [ ] Richer static-website hosting management surface
+- [ ] Historical metrics (time-series) view
+
+## ❓ FAQ
+
+**Does this replace Garage?** No — it's an admin UI for an existing Garage cluster. [Install Garage](https://garagehq.deuxfleurs.fr/documentation/quick-start/) first.
+
+**Do I need to run it inside Docker?** No. It's a single static binary; Docker is just the easiest deployment.
+
+**A bucket won't browse — why?** Object browsing addresses buckets by **global alias**. Add a global alias to the bucket first.
+
+**How do I generate a bcrypt hash for `AUTH_USER_PASS`?**
+```bash
+htpasswd -bnBC 10 "" 'your-password' | tr -d ':\n' | sed 's/^$2y/$2a/'
 ```
 
-### Running
+**Why is lint "red" in CI?** A pre-existing lint backlog is tracked separately and runs non-blocking; new code is kept clean.
 
-Start both the client and server concurrently:
+## 🤝 Contributing
 
-```sh
-$ pnpm run dev # or npm run dev
+Contributions are welcome! Please open an issue to discuss substantial changes first. Before submitting a PR, make sure `pnpm run typecheck`, `pnpm run test`, `pnpm run build`, and the backend `go build ./... && go vet ./... && go test -race ./...` all pass.
+
+## 🛠️ Development
+
+**Prerequisites:** Node 20+ with `pnpm` (via `corepack enable`) and Go 1.24+.
+
+```bash
+pnpm install
+pnpm run dev          # Vite (frontend) + air (backend) together
+# or separately:
+pnpm run dev:client   # frontend only
+pnpm run dev:server   # backend only (cd backend && air)
 ```
 
-Or start each instance separately:
+**Useful scripts:**
 
-```sh
-$ pnpm run dev:client
-$ cd backend
-$ pnpm run dev:server
+```bash
+pnpm run build        # tsc -b && vite build → dist/
+pnpm run typecheck    # tsc -b
+pnpm run test         # Vitest
+pnpm run lint         # ESLint
+
+cd backend
+go build ./... && go vet ./... && go test -race ./...
 ```
 
-### Testing
+A **release build** (single binary with the embedded UI) is produced by copying `dist/` into `backend/ui/dist/` and running `make` (`-tags=prod`); the [`Dockerfile`](Dockerfile) does this automatically. See [CLAUDE.md](CLAUDE.md) for conventions and architecture notes.
 
-Run the frontend test suite, typecheck, and lint:
+## 📄 License
 
-```sh
-$ pnpm run test
-$ pnpm run typecheck
-$ pnpm run lint
-```
+Released under the [MIT License](LICENSE). Garage WebUI-NG is a next-generation fork; the original copyright is retained below.
 
-Run the backend test suite:
+## 🙏 Acknowledgements
 
-```sh
-$ cd backend && go test ./...
-```
-
-All of the above run in CI on every pull request.
-
-> Note: `pnpm run lint` currently reports pre-existing violations and is
-> non-blocking in CI. New code should lint clean.
-
-## Troubleshooting
-
-Make sure you are using the latest version of Garage. If the data cannot be loaded, please check whether your instance of Garage has the admin API enabled and the ports are accessible.
-
-If you encounter any problems, please do not hesitate to submit an issue [here](https://github.com/khairul169/garage-webui/issues). You can describe the problem and attach the error logs.
+- **[Garage](https://garagehq.deuxfleurs.fr/)** by [Deuxfleurs](https://deuxfleurs.fr/) — the object storage engine this UI operates.
+- **[garage-webui](https://github.com/khairul169/garage-webui)** by **Khairul Hidayat** (© 2024) — the original project this "-NG" edition builds upon, under the MIT License.
