@@ -141,7 +141,7 @@ func (c *Auth) Logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Auth) GetStatus(w http.ResponseWriter, r *http.Request) {
-	enabled := utils.GetEnv("AUTH_USER_PASS", "") != ""
+	enabled := utils.GetEnv("AUTH_USER_PASS", "") != "" || utils.GetEnv("AUTH_VIEWER_USER_PASS", "") != ""
 
 	// When authentication is disabled every request is implicitly authorized,
 	// which is what the middleware does too (middleware/auth.go).

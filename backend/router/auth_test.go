@@ -98,6 +98,7 @@ func TestClientIPStripsPort(t *testing.T) {
 
 func TestGetStatusAuthDisabled(t *testing.T) {
 	t.Setenv("AUTH_USER_PASS", "")
+	t.Setenv("AUTH_VIEWER_USER_PASS", "")
 	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
 	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).GetStatus))
 
@@ -114,6 +115,44 @@ func TestGetStatusAuthDisabled(t *testing.T) {
 	}
 	if body.Enabled != false || body.Authenticated != true {
 		t.Errorf("got enabled=%v authenticated=%v; want false,true", body.Enabled, body.Authenticated)
+	}
+}
+
+// TestGetStatusEnabledWithViewerOnly covers a viewer-only deployment (no
+// AUTH_USER_PASS at all): GetStatus's "enabled" must still be true, matching
+// the middleware's authData gate (Step 2), which treats auth as enabled if
+// EITHER AUTH_USER_PASS or AUTH_VIEWER_USER_PASS is set. Before the fix,
+// "enabled" only checked AUTH_USER_PASS, so a logged-out viewer session in
+// this config would see enabled:false -> isAuthenticated:true -> canWrite:true
+// client-side, defeating the frontend gating (the server remained
+// authoritative regardless, so this was never a security hole).
+func TestGetStatusEnabledWithViewerOnly(t *testing.T) {
+	viewerHash, err := bcrypt.GenerateFromPassword([]byte("viewer-only-s3cret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt.GenerateFromPassword(viewer): %v", err)
+	}
+
+	t.Setenv("AUTH_USER_PASS", "")
+	t.Setenv("AUTH_VIEWER_USER_PASS", fmt.Sprintf("viewer:%s", viewerHash))
+	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
+	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).GetStatus))
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/status", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	var body struct {
+		Enabled       bool `json:"enabled"`
+		Authenticated bool `json:"authenticated"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Enabled != true {
+		t.Errorf("got enabled=%v; want true (viewer-only config must report auth as enabled)", body.Enabled)
+	}
+	if body.Authenticated != false {
+		t.Errorf("got authenticated=%v; want false (no session yet)", body.Authenticated)
 	}
 }
 
