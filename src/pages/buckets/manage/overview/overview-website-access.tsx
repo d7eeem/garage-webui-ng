@@ -5,12 +5,18 @@ import { useEffect } from "react";
 import { useDebounce } from "@/hooks/useDebounce";
 import { useUpdateBucket } from "../hooks";
 import { useConfig } from "@/hooks/useConfig";
-import { Info, LinkIcon } from "lucide-react";
+import { CircleXIcon, Copy, Info, LinkIcon } from "lucide-react";
+import { Alert } from "react-daisyui";
 import Button from "@/components/ui/button";
 import { InputField } from "@/components/ui/input";
 import { ToggleField } from "@/components/ui/toggle";
 import { useBucketContext } from "../context";
 import { useAuth } from "@/hooks/useAuth";
+import { copyToClipboard } from "@/lib/utils";
+import {
+  getBucketWebsiteBaseUrl,
+  isWebsiteHostingConfigured,
+} from "@/lib/website";
 
 const WebsiteAccessSection = () => {
   const { canWrite } = useAuth();
@@ -21,8 +27,7 @@ const WebsiteAccessSection = () => {
   });
   const isEnabled = useWatch({ control: form.control, name: "websiteAccess" });
 
-  const websitePort = config?.s3_web?.bind_addr?.split(":").pop() || "80";
-  const rootDomain = config?.s3_web?.root_domain;
+  const websiteUrl = getBucketWebsiteBaseUrl(bucketName, config);
 
   const updateMutation = useUpdateBucket(data?.id);
 
@@ -94,36 +99,38 @@ const WebsiteAccessSection = () => {
             />
           </div>
 
-          <div className="mt-4 alert flex flex-row flex-wrap text-sm gap-x-2 gap-y-1">
-            <a
-              href={`http://${bucketName}`}
-              className="inline-flex items-center flex-row gap-2 font-medium hover:link"
-              target="_blank"
+          {websiteUrl ? (
+            <div className="mt-4 alert flex flex-row flex-wrap items-center text-sm gap-x-2 gap-y-1">
+              <a
+                href={websiteUrl}
+                className="inline-flex items-center flex-row gap-2 font-medium hover:link"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <LinkIcon size={14} />
+                {websiteUrl}
+              </a>
+              <Button
+                icon={Copy}
+                onClick={() => copyToClipboard(websiteUrl)}
+                size="sm"
+                color="ghost"
+              />
+            </div>
+          ) : !isWebsiteHostingConfigured(config) ? (
+            <Alert
+              status="warning"
+              icon={<CircleXIcon />}
+              className="mt-4 items-start text-sm"
             >
-              <LinkIcon size={14} />
-              {bucketName}
-            </a>
-            {rootDomain ? (
-              <>
-                <a
-                  href={`http://${bucketName}${rootDomain}`}
-                  className="inline-flex items-center flex-row gap-2 font-medium hover:link"
-                  target="_blank"
-                >
-                  <LinkIcon size={14} />
-                  {bucketName + rootDomain}
-                </a>
-                <a
-                  href={`http://${bucketName}${rootDomain}:${websitePort}`}
-                  className="inline-flex items-center flex-row gap-2 font-medium hover:link"
-                  target="_blank"
-                >
-                  <LinkIcon size={14} />
-                  {bucketName + rootDomain + ":" + websitePort}
-                </a>
-              </>
-            ) : null}
-          </div>
+              <span>
+                Garage has no web endpoint configured, so this bucket has no
+                public website URL. Add an <code>[s3_web]</code> block with{" "}
+                <code>bind_addr</code> and <code>root_domain</code> to{" "}
+                <code>garage.toml</code>.
+              </span>
+            </Alert>
+          ) : null}
         </>
       )}
     </div>

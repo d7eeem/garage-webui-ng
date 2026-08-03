@@ -2,11 +2,12 @@ import { createDisclosure } from "@/lib/disclosure";
 import { Alert, Modal } from "react-daisyui";
 import { useBucketContext } from "../context";
 import { useConfig } from "@/hooks/useConfig";
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import Input from "@/components/ui/input";
 import Button from "@/components/ui/button";
 import { Copy, FileWarningIcon } from "lucide-react";
 import { copyToClipboard, handleError } from "@/lib/utils";
+import { getBucketWebsiteObjectUrl } from "@/lib/website";
 import Checkbox from "@/components/ui/checkbox";
 import { useShareLink } from "./hooks";
 
@@ -23,7 +24,6 @@ const ShareDialog = () => {
   const { isOpen, data, dialogRef } = shareDialog.use();
   const { bucket, bucketName } = useBucketContext();
   const { data: config } = useConfig();
-  const [domain, setDomain] = useState(bucketName);
   const [expires, setExpires] = useState(EXPIRY_OPTIONS[1].value);
   const [linkResult, setLinkResult] = useState<{
     key: string;
@@ -31,24 +31,8 @@ const ShareDialog = () => {
   } | null>(null);
   const shareLink = useShareLink(bucketName);
 
-  const websitePort = config?.s3_web?.bind_addr?.split(":").pop() || "80";
-  const rootDomain = config?.s3_web?.root_domain;
-
-  const domains = useMemo(
-    () => [
-      bucketName,
-      bucketName + rootDomain,
-      bucketName + rootDomain + `:${websitePort}`,
-    ],
-    [bucketName, config?.s3_web]
-  );
-
-  useEffect(() => {
-    setDomain(bucketName);
-  }, [domains]);
-
-  const url = "http://" + domain + "/" + data?.prefix + data?.key;
   const objectKey = (data?.prefix ?? "") + (data?.key ?? "");
+  const websiteUrl = getBucketWebsiteObjectUrl(bucketName, objectKey, config);
 
   const onGenerateLink = () => {
     shareLink.mutate(
@@ -112,29 +96,22 @@ const ShareDialog = () => {
             Sharing is only available for buckets with enabled website access.
           </Alert>
         )}
-        <div className="flex flex-row overflow-x-auto pb-2">
-          {domains.map((item) => (
-            <Checkbox
-              key={item}
-              label={item}
-              checked={item === domain}
-              onChange={() => setDomain(item)}
+        {websiteUrl && (
+          <div className="relative mt-2">
+            <Input
+              value={websiteUrl}
+              className="w-full pr-12"
+              onFocus={(e) => e.target.select()}
+              readOnly
             />
-          ))}
-        </div>
-        <div className="relative mt-2">
-          <Input
-            value={url}
-            className="w-full pr-12"
-            onFocus={(e) => e.target.select()}
-          />
-          <Button
-            icon={Copy}
-            onClick={() => copyToClipboard(url)}
-            className="absolute top-0 right-0"
-            color="ghost"
-          />
-        </div>
+            <Button
+              icon={Copy}
+              onClick={() => copyToClipboard(websiteUrl)}
+              className="absolute top-0 right-0"
+              color="ghost"
+            />
+          </div>
+        )}
       </Modal.Body>
       <Modal.Actions>
         <Button onClick={() => shareDialog.close()}>Close</Button>

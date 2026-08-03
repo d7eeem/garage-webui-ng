@@ -1,6 +1,8 @@
 import { Bucket } from "../types";
-import { ArchiveIcon, ChartPie, ChartScatter } from "lucide-react";
+import { ArchiveIcon, ChartPie, ChartScatter, Globe } from "lucide-react";
 import { readableBytes } from "@/lib/utils";
+import { useConfig } from "@/hooks/useConfig";
+import { getBucketWebsiteBaseUrl } from "@/lib/website";
 import Button from "@/components/ui/button";
 
 type Props = {
@@ -8,15 +10,40 @@ type Props = {
 };
 
 const BucketCard = ({ data }: Props) => {
+  const { data: config } = useConfig();
+  const websiteUrl = getBucketWebsiteBaseUrl(
+    data.globalAliases?.[0] ?? "",
+    config
+  );
+
   return (
     <div className="card card-body p-6">
       <div className="grid grid-cols-2 items-start gap-4 p-2 pb-0">
         <div className="flex flex-row items-start gap-x-3 col-span-2">
           <ArchiveIcon size={28} className="shrink-0" />
 
-          <p className="text-xl font-medium truncate">
-            {data.aliases?.join(", ")}
-          </p>
+          <div className="flex-1 min-w-0">
+            <p className="text-xl font-medium truncate">
+              {data.aliases?.join(", ")}
+            </p>
+            {data.websiteAccess &&
+              (websiteUrl ? (
+                <a
+                  href={websiteUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="badge badge-ghost gap-1 mt-1 hover:link"
+                >
+                  <Globe size={16} />
+                  Website
+                </a>
+              ) : (
+                <span className="badge badge-ghost gap-1 mt-1">
+                  <Globe size={16} />
+                  Website
+                </span>
+              ))}
+          </div>
         </div>
 
         <div>
