@@ -293,6 +293,89 @@ func (b *Browse) DeleteObject(w http.ResponseWriter, r *http.Request) {
 	utils.ResponseSuccess(w, res)
 }
 
+// GET /multipart/{bucket} — list unfinished multipart uploads for a bucket.
+func (b *Browse) ListMultipartUploads(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+	client, err := getS3Client(bucket)
+	if err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+	out, err := client.ListMultipartUploads(r.Context(), &s3.ListMultipartUploadsInput{
+		Bucket: aws.String(bucket),
+	})
+	if err != nil {
+		utils.ResponseError(w, fmt.Errorf("cannot list multipart uploads: %w", err))
+		return
+	}
+	type upload struct {
+		Key       string     `json:"key"`
+		UploadID  string     `json:"uploadId"`
+		Initiated *time.Time `json:"initiated"`
+	}
+	uploads := make([]upload, 0, len(out.Uploads))
+	for _, u := range out.Uploads {
+		uploads = append(uploads, upload{
+			Key:       aws.ToString(u.Key),
+			UploadID:  aws.ToString(u.UploadId),
+			Initiated: u.Initiated,
+		})
+	}
+	utils.ResponseSuccess(w, map[string]any{"uploads": uploads})
+}
+
+// DELETE /multipart/{bucket}?key=<key>&uploadId=<id>  — abort one
+// DELETE /multipart/{bucket}?all=true                 — abort all
+func (b *Browse) AbortMultipartUpload(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+	q := r.URL.Query()
+	client, err := getS3Client(bucket)
+	if err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+
+	abort := func(key, uploadID string) error {
+		_, err := client.AbortMultipartUpload(r.Context(), &s3.AbortMultipartUploadInput{
+			Bucket:   aws.String(bucket),
+			Key:      aws.String(key),
+			UploadId: aws.String(uploadID),
+		})
+		return err
+	}
+
+	if q.Get("all") == "true" {
+		out, err := client.ListMultipartUploads(r.Context(), &s3.ListMultipartUploadsInput{
+			Bucket: aws.String(bucket),
+		})
+		if err != nil {
+			utils.ResponseError(w, fmt.Errorf("cannot list multipart uploads: %w", err))
+			return
+		}
+		aborted := 0
+		for _, u := range out.Uploads {
+			if err := abort(aws.ToString(u.Key), aws.ToString(u.UploadId)); err != nil {
+				utils.ResponseError(w, fmt.Errorf("cannot abort upload: %w", err))
+				return
+			}
+			aborted++
+		}
+		utils.ResponseSuccess(w, map[string]int{"aborted": aborted})
+		return
+	}
+
+	key, uploadID := q.Get("key"), q.Get("uploadId")
+	if key == "" || uploadID == "" {
+		utils.ResponseErrorStatus(w, fmt.Errorf("key and uploadId are required (or all=true)"), http.StatusBadRequest)
+		return
+	}
+	if err := abort(key, uploadID); err != nil {
+		utils.ResponseError(w, fmt.Errorf("cannot abort upload: %w", err))
+		return
+	}
+	utils.ResponseSuccess(w, map[string]int{"aborted": 1})
+}
+
 // maxListKeys is the S3 per-request cap for both ListObjectsV2 results and
 // DeleteObjects inputs. Garage follows the S3 API here.
 const maxListKeys = 1000

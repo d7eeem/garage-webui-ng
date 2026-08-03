@@ -7,6 +7,30 @@ import {
 } from "@tanstack/react-query";
 import { Bucket, Permissions } from "../types";
 
+export const useMultipartUploads = (bucketName: string) => {
+  return useQuery({
+    queryKey: ["multipart", bucketName],
+    queryFn: () =>
+      api.get<{ uploads: { key: string; uploadId: string; initiated: string }[] }>(
+        `/multipart/${bucketName}`
+      ),
+    enabled: !!bucketName,
+  });
+};
+
+export const useAbortMultipart = (
+  bucketName: string,
+  options?: MutationOptions<any, Error, { key: string; uploadId: string } | { all: true }>
+) => {
+  return useMutation({
+    mutationFn: (v) =>
+      api.delete(`/multipart/${bucketName}`, {
+        params: "all" in v ? { all: true } : { key: v.key, uploadId: v.uploadId },
+      }),
+    ...options,
+  });
+};
+
 export const useBucket = (id?: string | null) => {
   return useQuery({
     queryKey: ["bucket", id],
