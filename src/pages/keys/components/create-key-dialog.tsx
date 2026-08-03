@@ -12,8 +12,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { handleError } from "@/lib/utils";
 import { toast } from "sonner";
 import { useEffect } from "react";
+import { useAuth } from "@/hooks/useAuth";
 
 const CreateKeyDialog = () => {
+  const { canWrite } = useAuth();
   const { dialogRef, isOpen, onOpen, onClose } = useDisclosure();
   const form = useForm<CreateKeySchema>({
     resolver: zodResolver(createKeySchema),
@@ -38,6 +40,10 @@ const CreateKeyDialog = () => {
   const onSubmit = form.handleSubmit((values) => {
     createKey.mutate(values);
   });
+
+  if (!canWrite) {
+    return null;
+  }
 
   return (
     <>

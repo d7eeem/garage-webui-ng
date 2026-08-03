@@ -7,8 +7,10 @@ import { useMemo } from "react";
 import { toast } from "sonner";
 import { handleError } from "@/lib/utils";
 import { useBucketContext } from "../context";
+import { useAuth } from "@/hooks/useAuth";
 
 const PermissionsTab = () => {
+  const { canWrite } = useAuth();
   const { bucket, refetch } = useBucketContext();
 
   const denyKey = useDenyKey(bucket.id, {
@@ -84,10 +86,14 @@ const PermissionsTab = () => {
                       className="cursor-default"
                     />
                   </span>
-                  <Button
-                    icon={Trash}
-                    onClick={() => onRemove(key.accessKeyId)}
-                  />
+                  {canWrite ? (
+                    <Button
+                      icon={Trash}
+                      onClick={() => onRemove(key.accessKeyId)}
+                    />
+                  ) : (
+                    <></>
+                  )}
                 </Table.Row>
               ))}
             </Table.Body>

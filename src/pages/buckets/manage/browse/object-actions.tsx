@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { handleError } from "@/lib/utils";
 import { API_URL } from "@/lib/api";
 import { shareDialog } from "./share-dialog";
+import { useAuth } from "@/hooks/useAuth";
 
 type Props = {
   prefix?: string;
@@ -17,6 +18,7 @@ type Props = {
 };
 
 const ObjectActions = ({ prefix = "", object, end }: Props) => {
+  const { canWrite } = useAuth();
   const { bucketName } = useBucketContext();
   const queryClient = useQueryClient();
   const isDirectory = object.objectKey.endsWith("/");
@@ -69,12 +71,14 @@ const ObjectActions = ({ prefix = "", object, end }: Props) => {
             >
               <Share2 /> Share
             </Dropdown.Item>
-            <Dropdown.Item
-              className="text-error bg-error/10"
-              onClick={onDelete}
-            >
-              <Trash /> Delete
-            </Dropdown.Item>
+            {canWrite && (
+              <Dropdown.Item
+                className="text-error bg-error/10"
+                onClick={onDelete}
+              >
+                <Trash /> Delete
+              </Dropdown.Item>
+            )}
           </Dropdown.Menu>
         </Dropdown>
       </span>

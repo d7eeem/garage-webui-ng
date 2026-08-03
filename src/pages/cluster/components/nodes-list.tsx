@@ -25,12 +25,14 @@ import {
 } from "../hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { useAuth } from "@/hooks/useAuth";
 
 type NodeListProps = {
   nodes: Node[];
 };
 
 const NodesList = ({ nodes }: NodeListProps) => {
+  const { canWrite } = useAuth();
   const { data, refetch } = useClusterLayout();
   const [filter, setFilter] = useState({
     search: "",
@@ -138,7 +140,7 @@ const NodesList = ({ nodes }: NodeListProps) => {
         />
         <div className="flex-1" />
 
-        {hasStagedChanges ? (
+        {canWrite && hasStagedChanges ? (
           <>
             <Button
               onClick={onRevert}
@@ -266,31 +268,35 @@ const NodesList = ({ nodes }: NodeListProps) => {
                       : "Inactive"}
                 </Badge>
 
-                <Dropdown
-                  end
-                  vertical={
-                    idx > 2 && idx >= items.length - 2 ? "top" : "bottom"
-                  }
-                >
-                  <Dropdown.Toggle button={false}>
-                    <Button shape="circle" color="ghost">
-                      <EllipsisVertical />
-                    </Button>
-                  </Dropdown.Toggle>
-                  <Dropdown.Menu className="min-w-40 gap-y-1">
-                    <Dropdown.Item onClick={() => onAssign(item)}>
-                      <RouteIcon size={20} /> Assign
-                    </Dropdown.Item>
-                    {item.role != null && (
-                      <Dropdown.Item
-                        className="text-error bg-error/10"
-                        onClick={() => onUnassign(item.id)}
-                      >
-                        <Trash2 size={20} /> Remove
+                {canWrite ? (
+                  <Dropdown
+                    end
+                    vertical={
+                      idx > 2 && idx >= items.length - 2 ? "top" : "bottom"
+                    }
+                  >
+                    <Dropdown.Toggle button={false}>
+                      <Button shape="circle" color="ghost">
+                        <EllipsisVertical />
+                      </Button>
+                    </Dropdown.Toggle>
+                    <Dropdown.Menu className="min-w-40 gap-y-1">
+                      <Dropdown.Item onClick={() => onAssign(item)}>
+                        <RouteIcon size={20} /> Assign
                       </Dropdown.Item>
-                    )}
-                  </Dropdown.Menu>
-                </Dropdown>
+                      {item.role != null && (
+                        <Dropdown.Item
+                          className="text-error bg-error/10"
+                          onClick={() => onUnassign(item.id)}
+                        >
+                          <Trash2 size={20} /> Remove
+                        </Dropdown.Item>
+                      )}
+                    </Dropdown.Menu>
+                  </Dropdown>
+                ) : (
+                  <></>
+                )}
               </Table.Row>
             ))}
           </Table.Body>

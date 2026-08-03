@@ -7,8 +7,10 @@ import { useUpdateBucket } from "../hooks";
 import { InputField } from "@/components/ui/input";
 import { ToggleField } from "@/components/ui/toggle";
 import { useBucketContext } from "../context";
+import { useAuth } from "@/hooks/useAuth";
 
 const QuotaSection = () => {
+  const { canWrite } = useAuth();
   const { bucket: data } = useBucketContext();
 
   const form = useForm<QuotaSchema>({
@@ -45,7 +47,13 @@ const QuotaSection = () => {
 
   return (
     <div className="mt-8">
-      <ToggleField form={form} name="enabled" title="Quotas" label="Enabled" />
+      <ToggleField
+        form={form}
+        name="enabled"
+        title="Quotas"
+        label="Enabled"
+        disabled={!canWrite}
+      />
 
       {isEnabled && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -54,6 +62,7 @@ const QuotaSection = () => {
             name="maxObjects"
             title="Max Objects"
             type="number"
+            disabled={!canWrite}
           />
 
           <InputField
@@ -61,6 +70,7 @@ const QuotaSection = () => {
             name="maxSize"
             title="Max Size (GB)"
             type="number"
+            disabled={!canWrite}
           />
         </div>
       )}

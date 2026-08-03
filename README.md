@@ -159,7 +159,26 @@ Configurable envs:
 
 Enable authentication by setting the `AUTH_USER_PASS` environment variable to one or more `username:password_hash` entries, where each `password_hash` is a bcrypt hash of that user's password. A single entry (`username:password_hash`) gives one shared login, same as before. For multiple individual logins, separate entries with a comma: `alice:hash1,bob:hash2`. Any listed username/password pair is accepted.
 
-Generate a username and password hash using the following command (repeat per user):
+#### Roles
+
+Every user in `AUTH_USER_PASS` logs in as an **admin**, with full read/write
+access, same as before. Optionally set `AUTH_VIEWER_USER_PASS` — same
+`username:password_hash` / comma-separated multi-user format — to add
+**viewer** accounts: read-only sessions that can browse buckets, objects,
+keys and cluster status, but get a 403 on every mutation (create/delete
+bucket, upload/delete objects, allow/deny keys, assign nodes or apply/revert
+a layout change, and revealing a key's secret access key). The UI hides the
+corresponding controls for a viewer session, but the server-side check is
+what actually enforces it.
+
+> **This is a guardrail, not an isolation boundary.** The server still holds
+> the full Garage admin token and proxies every request with it; the viewer
+> role only restricts which requests your own session is allowed to make. It
+> does not scope access by bucket — a viewer sees everything, just can't
+> change it. Use it to hand a look-but-don't-touch session to a semi-trusted
+> operator, not as a security boundary between mutually distrusting parties.
+
+Generate a username and password hash using the following command (repeat per user, admin or viewer):
 
 ```bash
 htpasswd -nbBC 10 "YOUR_USERNAME" "YOUR_PASSWORD"
@@ -189,6 +208,18 @@ webui:
   ....
   environment:
     AUTH_USER_PASS: "alice:$$2y$$10$$DSTi9o...,bob:$$2y$$10$$AbCdEf..."
+```
+
+To add read-only viewers, set `AUTH_VIEWER_USER_PASS` the same way — it uses
+the same format and escaping rules as `AUTH_USER_PASS`, just for a separate
+set of accounts:
+
+```yml
+webui:
+  ....
+  environment:
+    AUTH_USER_PASS: "alice:$$2y$$10$$DSTi9o..."
+    AUTH_VIEWER_USER_PASS: "carol:$$2y$$10$$ZyXwVu..."
 ```
 
 If you pass the variable through an `.env` file or `env_file:` instead, use the

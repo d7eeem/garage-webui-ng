@@ -9,6 +9,7 @@ import { useDisclosure } from "@/hooks/useDisclosure";
 import { handleError } from "@/lib/utils";
 import { useBulkDelete } from "./hooks";
 import { BulkDeleteResult } from "./types";
+import { useAuth } from "@/hooks/useAuth";
 
 type Props = {
   bucketName: string;
@@ -19,6 +20,7 @@ type Props = {
 const PREVIEW_COUNT = 5;
 
 const BulkActions = ({ bucketName, selected, setSelected }: Props) => {
+  const { canWrite } = useAuth();
   const { isOpen, onOpen, onClose } = useDisclosure();
   const queryClient = useQueryClient();
   const [result, setResult] = useState<BulkDeleteResult | null>(null);
@@ -77,84 +79,84 @@ const BulkActions = ({ bucketName, selected, setSelected }: Props) => {
         {selected.size} object{selected.size === 1 ? "" : "s"} selected
       </span>
 
-      <Button
-        icon={Trash2}
-        color="error"
-        size="sm"
-        onClick={onOpen}
-      >
-        Delete selected
-      </Button>
+      {canWrite && (
+        <>
+          <Button icon={Trash2} color="error" size="sm" onClick={onOpen}>
+            Delete selected
+          </Button>
 
-      <Modal open={isOpen}>
-        <Modal.Header>
-          {result ? "Delete results" : "Delete selected objects"}
-        </Modal.Header>
+          <Modal open={isOpen}>
+            <Modal.Header>
+              {result ? "Delete results" : "Delete selected objects"}
+            </Modal.Header>
 
-        <Modal.Body>
-          {result ? (
-            <div className="flex flex-col gap-2">
-              {/* result is only ever set when there's at least one failure
-                  (see onSuccess above) — the all-success path toasts and
-                  closes the modal instead, so this is always "warning". */}
-              <Alert status="warning" icon={<CircleAlertIcon />}>
-                <span>
-                  Deleted {result.deleted} of {total} — {result.errors.length}{" "}
-                  failed
-                </span>
-              </Alert>
+            <Modal.Body>
+              {result ? (
+                <div className="flex flex-col gap-2">
+                  {/* result is only ever set when there's at least one failure
+                      (see onSuccess above) — the all-success path toasts and
+                      closes the modal instead, so this is always "warning". */}
+                  <Alert status="warning" icon={<CircleAlertIcon />}>
+                    <span>
+                      Deleted {result.deleted} of {total} —{" "}
+                      {result.errors.length} failed
+                    </span>
+                  </Alert>
 
-              <ul className="text-sm max-h-48 overflow-y-auto list-disc pl-5">
-                {result.errors.map((e) => (
-                  <li key={e.key}>
-                    <span className="font-mono">{e.key}</span>: {e.message}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-2">
-              <p>
-                Are you sure you want to delete {selectedKeys.length} selected
-                object{selectedKeys.length === 1 ? "" : "s"}? This action
-                cannot be undone.
-              </p>
+                  <ul className="text-sm max-h-48 overflow-y-auto list-disc pl-5">
+                    {result.errors.map((e) => (
+                      <li key={e.key}>
+                        <span className="font-mono">{e.key}</span>:{" "}
+                        {e.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <p>
+                    Are you sure you want to delete {selectedKeys.length}{" "}
+                    selected object{selectedKeys.length === 1 ? "" : "s"}?
+                    This action cannot be undone.
+                  </p>
 
-              <ul className="text-sm max-h-48 overflow-y-auto list-disc pl-5 font-mono">
-                {selectedKeys.slice(0, PREVIEW_COUNT).map((key) => (
-                  <li key={key}>{key}</li>
-                ))}
-                {selectedKeys.length > PREVIEW_COUNT && (
-                  <li className="font-sans">
-                    …and {selectedKeys.length - PREVIEW_COUNT} more
-                  </li>
-                )}
-              </ul>
-            </div>
-          )}
-        </Modal.Body>
+                  <ul className="text-sm max-h-48 overflow-y-auto list-disc pl-5 font-mono">
+                    {selectedKeys.slice(0, PREVIEW_COUNT).map((key) => (
+                      <li key={key}>{key}</li>
+                    ))}
+                    {selectedKeys.length > PREVIEW_COUNT && (
+                      <li className="font-sans">
+                        …and {selectedKeys.length - PREVIEW_COUNT} more
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              )}
+            </Modal.Body>
 
-        <Modal.Actions>
-          {result ? (
-            <Button onClick={closeModal}>Close</Button>
-          ) : (
-            <>
-              <Button onClick={onClose} disabled={bulkDelete.isPending}>
-                Cancel
-              </Button>
-              <Button
-                color="error"
-                onClick={onConfirmDelete}
-                disabled={bulkDelete.isPending}
-              >
-                {bulkDelete.isPending
-                  ? "Deleting…"
-                  : `Delete ${selectedKeys.length}`}
-              </Button>
-            </>
-          )}
-        </Modal.Actions>
-      </Modal>
+            <Modal.Actions>
+              {result ? (
+                <Button onClick={closeModal}>Close</Button>
+              ) : (
+                <>
+                  <Button onClick={onClose} disabled={bulkDelete.isPending}>
+                    Cancel
+                  </Button>
+                  <Button
+                    color="error"
+                    onClick={onConfirmDelete}
+                    disabled={bulkDelete.isPending}
+                  >
+                    {bulkDelete.isPending
+                      ? "Deleting…"
+                      : `Delete ${selectedKeys.length}`}
+                  </Button>
+                </>
+              )}
+            </Modal.Actions>
+          </Modal>
+        </>
+      )}
     </div>
   );
 };

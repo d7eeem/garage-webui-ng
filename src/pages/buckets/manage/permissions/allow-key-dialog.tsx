@@ -13,12 +13,14 @@ import { toast } from "sonner";
 import { handleError } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { useBucketContext } from "../context";
+import { useAuth } from "@/hooks/useAuth";
 
 type Props = {
   currentKeys?: string[];
 };
 
 const AllowKeyDialog = ({ currentKeys }: Props) => {
+  const { canWrite } = useAuth();
   const { bucket } = useBucketContext();
   const { dialogRef, isOpen, onOpen, onClose } = useDisclosure();
   const { data: keys } = useKeys();
@@ -77,6 +79,10 @@ const AllowKeyDialog = ({ currentKeys }: Props) => {
       }));
     allowKey.mutate(data);
   });
+
+  if (!canWrite) {
+    return null;
+  }
 
   return (
     <>

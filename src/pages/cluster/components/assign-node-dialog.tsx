@@ -15,6 +15,7 @@ import { useEffect, useMemo } from "react";
 import { assignNodeDialog } from "../stores";
 import FormControl from "@/components/ui/form-control";
 import Select2 from "@/components/ui/select";
+import { useAuth } from "@/hooks/useAuth";
 
 const defaultValues: AssignNodeSchema = {
   nodeId: "",
@@ -26,6 +27,7 @@ const defaultValues: AssignNodeSchema = {
 };
 
 const AssignNodeDialog = () => {
+  const { canWrite } = useAuth();
   const { isOpen, data } = assignNodeDialog.use();
   const { data: cluster } = useClusterStatus();
   const { data: layout } = useClusterLayout();
@@ -115,7 +117,10 @@ const AssignNodeDialog = () => {
   });
 
   return (
-    <Modal open={isOpen}>
+    // canWrite is re-checked here (not just at the "Assign" trigger in
+    // nodes-list.tsx) so this dialog can never actually open for a viewer
+    // session, regardless of what calls assignNodeDialog.open().
+    <Modal open={isOpen && canWrite}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
