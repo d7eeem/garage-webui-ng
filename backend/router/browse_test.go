@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
@@ -146,6 +147,39 @@ func TestChunkObjectIdentifiers(t *testing.T) {
 			if *flat[i].Key != *keys[i].Key {
 				t.Errorf("flattened[%d] = %q, want %q", i, *flat[i].Key, *keys[i].Key)
 			}
+		}
+	})
+}
+
+// TestDeleteErrorsToList proves the Q4 fix: every per-object delete error is
+// reported, not just the first (the bug this plan removed was truncating the
+// list to res.Errors[0]).
+func TestDeleteErrorsToList(t *testing.T) {
+	t.Run("nil input produces an empty, non-nil slice", func(t *testing.T) {
+		got := deleteErrorsToList(nil)
+		if got == nil {
+			t.Fatal("deleteErrorsToList(nil) = nil, want non-nil empty slice")
+		}
+		if len(got) != 0 {
+			t.Errorf("len = %d, want 0", len(got))
+		}
+	})
+
+	t.Run("reports ALL errors, not just the first", func(t *testing.T) {
+		errs := []types.Error{
+			{Key: aws.String("a"), Message: aws.String("denied")},
+			{Key: aws.String("b"), Message: aws.String("gone")},
+		}
+		got := deleteErrorsToList(errs)
+
+		if len(got) != 2 {
+			t.Fatalf("len = %d, want 2", len(got))
+		}
+		if got[0]["key"] != "a" || got[0]["message"] != "denied" {
+			t.Errorf("got[0] = %v, want key=a message=denied", got[0])
+		}
+		if got[1]["key"] != "b" || got[1]["message"] != "gone" {
+			t.Errorf("got[1] = %v, want key=b message=gone", got[1])
 		}
 	})
 }

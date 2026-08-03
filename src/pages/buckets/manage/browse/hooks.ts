@@ -5,6 +5,7 @@ import {
   UseMutationOptions,
 } from "@tanstack/react-query";
 import {
+  BulkDeleteResult,
   GetObjectsResult,
   PutObjectPayload,
   UseBrowserObjectOptions,
@@ -57,6 +58,19 @@ export const useDeleteObject = (
       // DNS-compatible names and never need percent-encoding.
       api.delete(`/browse/${bucket}/${encodeObjectPath(data.key)}`, {
         params: { recursive: data.recursive },
+      }),
+    ...options,
+  });
+};
+
+export const useBulkDelete = (
+  bucket: string,
+  options?: UseMutationOptions<BulkDeleteResult, Error, string[]>
+) => {
+  return useMutation({
+    mutationFn: (keys) =>
+      api.post<BulkDeleteResult>(`/browse/${bucket}`, {
+        body: { action: "delete", keys },
       }),
     ...options,
   });

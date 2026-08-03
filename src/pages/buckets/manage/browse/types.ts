@@ -21,3 +21,8 @@ export type PutObjectPayload = {
   key: string;
   file: File | null;
 };
+
+export type BulkDeleteResult = {
+  deleted: number;
+  errors: { key: string; message: string }[];
+};
