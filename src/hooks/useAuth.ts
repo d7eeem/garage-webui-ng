@@ -6,6 +6,9 @@ type AuthResponse = {
   authenticated: boolean;
   username?: string;
   role?: string;
+  // True when the deployment has no users yet, so the first administrator
+  // still has to be created.
+  needsSetup: boolean;
 };
 
 export const useAuth = () => {
@@ -17,12 +20,15 @@ export const useAuth = () => {
   const role = data?.role;
   return {
     isLoading,
-    isEnabled: data?.enabled ?? false,
+    // Authentication is mandatory; the server always reports true. Kept as a
+    // field so the UI does not have to change if that ever gains nuance.
+    isEnabled: data?.enabled ?? true,
     isAuthenticated: data?.authenticated ?? false,
+    needsSetup: data?.needsSetup ?? false,
     username: data?.username,
     role,
-    // auth off ⇒ everyone is effectively admin (matches the middleware
-    // pass-through); auth on ⇒ only non-viewers can write.
-    canWrite: !(data?.enabled) || role !== "viewer",
+    // Everyone except a viewer may write. The server is authoritative — this
+    // only decides what the UI bothers to render.
+    canWrite: role !== "viewer",
   };
 };

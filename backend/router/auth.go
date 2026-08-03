@@ -1,14 +1,19 @@
 package router
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"github.com/d7eeem/garage-webui-ng/utils"
+	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/d7eeem/garage-webui-ng/store"
+	"github.com/d7eeem/garage-webui-ng/utils"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -58,23 +63,30 @@ func (l *loginLimiter) allow(key string, now time.Time) bool {
 
 var loginAttempts = newLoginLimiter(10, time.Minute)
 
-// parseUserPass parses AUTH_USER_PASS into username→bcrypt-hash. Entries are
-// comma-separated; within an entry, the FIRST ':' splits username from hash
-// (bcrypt hashes never contain ',' or ':'). A single "user:hash" yields one entry.
-func parseUserPass(raw string) map[string]string {
-	users := map[string]string{}
-	for _, entry := range strings.Split(raw, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		i := strings.Index(entry, ":")
-		if i <= 0 || i == len(entry)-1 {
-			continue // malformed: no ':', empty user, or empty hash
-		}
-		users[strings.TrimSpace(entry[:i])] = entry[i+1:]
+// errInvalidCredentials is the single message returned for every failed
+// login, whatever the actual reason: it must not tell an attacker whether the
+// username exists, is disabled, or simply had the wrong password.
+var errInvalidCredentials = errors.New("invalid username or password")
+
+// dummyPasswordHash is compared against when a login names an account that
+// does not exist or is disabled, so that those cases cost the same wall-clock
+// time as a wrong password. Without it, response latency alone would let an
+// attacker enumerate valid usernames. It is derived from random bytes at
+// startup and is not a credential: nothing can ever match it.
+var dummyPasswordHash = newDummyPasswordHash()
+
+func newDummyPasswordHash() []byte {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		// Only the CPU cost of the comparison matters here, so a fixed
+		// fallback is fine — this value is never accepted as a password.
+		secret = []byte("garage-webui-ng-timing-equaliser")
 	}
-	return users
+	hash, err := bcrypt.GenerateFromPassword(secret, bcrypt.DefaultCost)
+	if err != nil {
+		return nil
+	}
+	return hash
 }
 
 // clientIP extracts a rate-limiting key from the request. RemoteAddr is used
@@ -104,22 +116,28 @@ func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	admins := parseUserPass(utils.GetEnv("AUTH_USER_PASS", ""))
-	viewers := parseUserPass(utils.GetEnv("AUTH_VIEWER_USER_PASS", ""))
-	if len(admins) == 0 && len(viewers) == 0 {
-		utils.ResponseErrorStatus(w, errors.New("AUTH_USER_PASS not set"), 500)
+	st := store.Default()
+	if st == nil {
+		utils.ResponseErrorStatus(w, store.ErrNoStore, http.StatusInternalServerError)
 		return
 	}
 
-	username := strings.TrimSpace(body.Username)
-	role := ""
-	if h, ok := admins[username]; ok && bcrypt.CompareHashAndPassword([]byte(h), []byte(body.Password)) == nil {
-		role = "admin"
-	} else if h, ok := viewers[username]; ok && bcrypt.CompareHashAndPassword([]byte(h), []byte(body.Password)) == nil {
-		role = "viewer"
+	user, err := st.GetUserByUsername(r.Context(), strings.TrimSpace(body.Username))
+	if err != nil {
+		utils.ResponseError(w, fmt.Errorf("cannot look up user: %w", err))
+		return
 	}
-	if role == "" {
-		utils.ResponseErrorStatus(w, errors.New("invalid username or password"), 401)
+
+	// An unknown or disabled account still pays for a bcrypt comparison, so
+	// that its response time is indistinguishable from a wrong password.
+	if user == nil || user.Disabled {
+		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(body.Password))
+		utils.ResponseErrorStatus(w, errInvalidCredentials, http.StatusUnauthorized)
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(body.Password)); err != nil {
+		utils.ResponseErrorStatus(w, errInvalidCredentials, http.StatusUnauthorized)
 		return
 	}
 
@@ -128,10 +146,22 @@ func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Best-effort: a failure to stamp last_login must not fail the login.
+	if err := st.TouchLastLogin(r.Context(), user.ID); err != nil {
+		log.Printf("cannot record last login for user %d: %v", user.ID, err)
+	}
+
+	// Record the stored spelling, not what the client typed: usernames are
+	// case-insensitive, so the session and the audit log should show one
+	// canonical form.
 	utils.Session.Set(r, "authenticated", true)
-	utils.Session.Set(r, "username", username)
-	utils.Session.Set(r, "role", role)
-	utils.ResponseSuccess(w, map[string]any{"authenticated": true, "username": username, "role": role})
+	utils.Session.Set(r, "username", user.Username)
+	utils.Session.Set(r, "role", user.Role)
+	utils.ResponseSuccess(w, map[string]any{
+		"authenticated": true,
+		"username":      user.Username,
+		"role":          user.Role,
+	})
 }
 
 func (c *Auth) Logout(w http.ResponseWriter, r *http.Request) {
@@ -140,13 +170,30 @@ func (c *Auth) Logout(w http.ResponseWriter, r *http.Request) {
 	utils.ResponseSuccess(w, true)
 }
 
+// GetStatus is the one endpoint the UI may call before authenticating (see
+// middleware.isPublicPath), so it must never leak more than: is anyone logged
+// in on this session, and does this deployment still need its first account?
 func (c *Auth) GetStatus(w http.ResponseWriter, r *http.Request) {
-	enabled := utils.GetEnv("AUTH_USER_PASS", "") != "" || utils.GetEnv("AUTH_VIEWER_USER_PASS", "") != ""
+	// Authentication is mandatory since users moved into the database, so
+	// "enabled" is a constant. The field stays in the payload because the
+	// frontend still reads it.
+	const enabled = true
 
-	// When authentication is disabled every request is implicitly authorized,
-	// which is what the middleware does too (middleware/auth.go).
-	isAuthenticated := !enabled
+	// A missing store means startup has not finished; report the deployment
+	// as un-set-up rather than pretending it is ready. This never grants
+	// access — the middleware is the authority on that.
+	needsSetup := true
+	if st := store.Default(); st != nil {
+		count, err := st.CountUsers(r.Context())
+		if err != nil {
+			utils.ResponseError(w, fmt.Errorf("cannot count users: %w", err))
+			return
+		}
+		needsSetup = count == 0
+	}
 
+	// Authentication comes only from the session now.
+	isAuthenticated := false
 	if authSession, ok := utils.Session.Get(r, "authenticated").(bool); ok && authSession {
 		isAuthenticated = true
 	}
@@ -166,5 +213,6 @@ func (c *Auth) GetStatus(w http.ResponseWriter, r *http.Request) {
 		"authenticated": isAuthenticated,
 		"username":      username,
 		"role":          role,
+		"needsSetup":    needsSetup,
 	})
 }

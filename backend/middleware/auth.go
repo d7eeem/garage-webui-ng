@@ -26,18 +26,42 @@ func isViewerAllowed(r *http.Request) bool {
 	return r.Method == http.MethodPost && r.URL.Path == "/auth/logout"
 }
 
+// isPublicPath reports whether a request may be served without an
+// authenticated session. This is a security boundary: authentication is
+// mandatory, so everything not listed here requires a session, and the list
+// must stay minimal and exact-match — never a prefix.
+//
+// POST /auth/login is registered on the outer mux (router.HandleApiRouter)
+// and never reaches this middleware, so it does not appear here.
+func isPublicPath(r *http.Request) bool {
+	switch {
+	// The UI needs to know whether it is logged in before it can render a
+	// login form. The handler exposes nothing beyond the caller's own
+	// session state and whether a first account still has to be created.
+	case r.Method == http.MethodGet && r.URL.Path == "/auth/status":
+		return true
+
+	// First-run setup: a brand-new deployment has no users, so nobody could
+	// possibly authenticate in order to create the first one. The handlers
+	// themselves must refuse to run once any user exists.
+	case r.Method == http.MethodGet && r.URL.Path == "/setup/status":
+		return true
+	case r.Method == http.MethodPost && r.URL.Path == "/setup":
+		return true
+	}
+	return false
+}
+
 func AuthMiddleware(next http.Handler) http.Handler {
-	authData := utils.GetEnv("AUTH_USER_PASS", "") + utils.GetEnv("AUTH_VIEWER_USER_PASS", "")
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := utils.Session.Get(r, "authenticated")
-
-		if authData == "" {
+		if isPublicPath(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		if auth == nil || !auth.(bool) {
+		// Comma-ok, not a bare type assertion: a session value of an
+		// unexpected type must fail closed, not panic.
+		if authenticated, _ := utils.Session.Get(r, "authenticated").(bool); !authenticated {
 			utils.ResponseErrorStatus(w, errors.New("unauthorized"), http.StatusUnauthorized)
 			return
 		}

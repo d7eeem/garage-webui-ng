@@ -3,16 +3,32 @@ package router
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/d7eeem/garage-webui-ng/store"
 	"github.com/d7eeem/garage-webui-ng/utils"
-
-	"golang.org/x/crypto/bcrypt"
 )
+
+// newTestStore opens a throwaway user database and installs it as the
+// process-wide store for the duration of the test, mirroring what main.go
+// does at startup.
+func newTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "users.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	store.SetDefault(st)
+	t.Cleanup(func() {
+		store.SetDefault(nil)
+		st.Close()
+	})
+	return st
+}
 
 func TestLoginLimiterAllowsUpToLimit(t *testing.T) {
 	limiter := newLoginLimiter(3, time.Minute)
@@ -96,246 +112,126 @@ func TestClientIPStripsPort(t *testing.T) {
 	}
 }
 
-func TestGetStatusAuthDisabled(t *testing.T) {
+type statusResponse struct {
+	Enabled       bool   `json:"enabled"`
+	Authenticated bool   `json:"authenticated"`
+	Username      string `json:"username"`
+	Role          string `json:"role"`
+	NeedsSetup    bool   `json:"needsSetup"`
+}
+
+func getStatus(t *testing.T) statusResponse {
+	t.Helper()
+	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
+	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).GetStatus))
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/status", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /auth/status: status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+	}
+
+	var body statusResponse
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return body
+}
+
+// TestGetStatusNeedsSetup: a fresh deployment has no users, so the UI must be
+// told to run the setup wizard rather than show a login form nobody can pass.
+func TestGetStatusNeedsSetup(t *testing.T) {
+	newTestStore(t)
+
+	body := getStatus(t)
+	if !body.Enabled {
+		t.Error("enabled = false, want true (authentication is mandatory)")
+	}
+	if body.Authenticated {
+		t.Error("authenticated = true, want false (no session)")
+	}
+	if !body.NeedsSetup {
+		t.Error("needsSetup = false, want true (no users exist)")
+	}
+}
+
+// TestGetStatusWithUsersNoSession: once a user exists the deployment is set
+// up, but an anonymous caller is still unauthenticated. The old open-mode
+// behaviour (no AUTH_USER_PASS ⇒ authenticated:true) is gone.
+func TestGetStatusWithUsersNoSession(t *testing.T) {
+	// Deliberately set: the environment must no longer influence the answer.
 	t.Setenv("AUTH_USER_PASS", "")
 	t.Setenv("AUTH_VIEWER_USER_PASS", "")
-	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
-	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).GetStatus))
 
-	req := httptest.NewRequest(http.MethodGet, "/auth/status", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
+	st := newTestStore(t)
+	if _, err := st.CreateUser(t.Context(), "admin", "correct-horse-battery", store.RoleAdmin); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
 
-	var body struct {
-		Enabled       bool `json:"enabled"`
-		Authenticated bool `json:"authenticated"`
+	body := getStatus(t)
+	if !body.Enabled {
+		t.Error("enabled = false, want true (authentication is mandatory)")
 	}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
+	if body.Authenticated {
+		t.Error("authenticated = true, want false (no session)")
 	}
-	if body.Enabled != false || body.Authenticated != true {
-		t.Errorf("got enabled=%v authenticated=%v; want false,true", body.Enabled, body.Authenticated)
+	if body.NeedsSetup {
+		t.Error("needsSetup = true, want false (a user exists)")
+	}
+	if body.Username != "" || body.Role != "" {
+		t.Errorf("username = %q, role = %q; want both empty for an anonymous caller", body.Username, body.Role)
 	}
 }
 
-// TestGetStatusEnabledWithViewerOnly covers a viewer-only deployment (no
-// AUTH_USER_PASS at all): GetStatus's "enabled" must still be true, matching
-// the middleware's authData gate (Step 2), which treats auth as enabled if
-// EITHER AUTH_USER_PASS or AUTH_VIEWER_USER_PASS is set. Before the fix,
-// "enabled" only checked AUTH_USER_PASS, so a logged-out viewer session in
-// this config would see enabled:false -> isAuthenticated:true -> canWrite:true
-// client-side, defeating the frontend gating (the server remained
-// authoritative regardless, so this was never a security hole).
-func TestGetStatusEnabledWithViewerOnly(t *testing.T) {
-	viewerHash, err := bcrypt.GenerateFromPassword([]byte("viewer-only-s3cret"), bcrypt.MinCost)
+// TestLoginAgainstStore drives the real Login handler (through the scs
+// LoadAndSave middleware — calling the handler directly panics with "scs: no
+// session data in context") against a temporary user database. Every
+// credential here is generated at test time.
+func TestLoginAgainstStore(t *testing.T) {
+	const (
+		adminPassword    = "alice-s3cret-password"
+		viewerPassword   = "bob-s3cret-password"
+		disabledPassword = "carol-s3cret-password"
+	)
+
+	st := newTestStore(t)
+	ctx := t.Context()
+
+	if _, err := st.CreateUser(ctx, "alice", adminPassword, store.RoleAdmin); err != nil {
+		t.Fatalf("CreateUser(alice): %v", err)
+	}
+	if _, err := st.CreateUser(ctx, "bob", viewerPassword, store.RoleViewer); err != nil {
+		t.Fatalf("CreateUser(bob): %v", err)
+	}
+	carol, err := st.CreateUser(ctx, "carol", disabledPassword, store.RoleAdmin)
 	if err != nil {
-		t.Fatalf("bcrypt.GenerateFromPassword(viewer): %v", err)
+		t.Fatalf("CreateUser(carol): %v", err)
+	}
+	if err := st.SetDisabled(ctx, carol.ID, true); err != nil {
+		t.Fatalf("SetDisabled(carol): %v", err)
 	}
 
-	t.Setenv("AUTH_USER_PASS", "")
-	t.Setenv("AUTH_VIEWER_USER_PASS", fmt.Sprintf("viewer:%s", viewerHash))
-	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
-	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).GetStatus))
-
-	req := httptest.NewRequest(http.MethodGet, "/auth/status", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	var body struct {
-		Enabled       bool `json:"enabled"`
-		Authenticated bool `json:"authenticated"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body.Enabled != true {
-		t.Errorf("got enabled=%v; want true (viewer-only config must report auth as enabled)", body.Enabled)
-	}
-	if body.Authenticated != false {
-		t.Errorf("got authenticated=%v; want false (no session yet)", body.Authenticated)
-	}
-}
-
-func TestGetStatusAuthEnabledNoSession(t *testing.T) {
-	t.Setenv("AUTH_USER_PASS", "u:hash")
-	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
-	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).GetStatus))
-
-	req := httptest.NewRequest(http.MethodGet, "/auth/status", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	var body struct {
-		Enabled       bool `json:"enabled"`
-		Authenticated bool `json:"authenticated"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body.Enabled != true || body.Authenticated != false {
-		t.Errorf("got enabled=%v authenticated=%v; want true,false", body.Enabled, body.Authenticated)
-	}
-}
-
-func TestParseUserPass(t *testing.T) {
-	tests := []struct {
-		name string
-		raw  string
-		want map[string]string
-	}{
-		{
-			name: "single entry",
-			raw:  "u:h",
-			want: map[string]string{"u": "h"},
-		},
-		{
-			name: "two entries",
-			raw:  "a:h1,b:h2",
-			want: map[string]string{"a": "h1", "b": "h2"},
-		},
-		{
-			name: "whitespace around entries trimmed",
-			raw:  " a:h1 , b:h2 ",
-			want: map[string]string{"a": "h1", "b": "h2"},
-		},
-		{
-			name: "empty raw yields no entries",
-			raw:  "",
-			want: map[string]string{},
-		},
-		{
-			name: "malformed entries skipped: no colon, empty user, empty hash, blank",
-			raw:  "noColon,:h,u:,,a:h1",
-			want: map[string]string{"a": "h1"},
-		},
-		{
-			name: "hash containing $ kept intact",
-			raw:  "u:$2y$10$abc",
-			want: map[string]string{"u": "$2y$10$abc"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := parseUserPass(tt.raw)
-			if len(got) != len(tt.want) {
-				t.Fatalf("parseUserPass(%q) = %#v, want %#v", tt.raw, got, tt.want)
-			}
-			for k, wantV := range tt.want {
-				if gotV, ok := got[k]; !ok || gotV != wantV {
-					t.Errorf("parseUserPass(%q)[%q] = %q, ok=%v; want %q", tt.raw, k, gotV, ok, wantV)
-				}
-			}
-		})
-	}
-}
-
-// TestLoginMultiUser drives the real Login handler (through the scs
-// LoadAndSave middleware, per the GetStatus test pattern above — calling the
-// handler directly panics with "scs: no session data in context") against an
-// AUTH_USER_PASS containing two users with freshly generated bcrypt hashes.
-// Credentials are generated at test time; nothing here is a real credential.
-func TestLoginMultiUser(t *testing.T) {
-	aliceHash, err := bcrypt.GenerateFromPassword([]byte("alice-s3cret-1"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("bcrypt.GenerateFromPassword(alice): %v", err)
-	}
-	bobHash, err := bcrypt.GenerateFromPassword([]byte("bob-s3cret-2"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("bcrypt.GenerateFromPassword(bob): %v", err)
-	}
-
-	t.Setenv("AUTH_USER_PASS", fmt.Sprintf("alice:%s,bob:%s", aliceHash, bobHash))
 	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
 	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).Login))
 
 	tests := []struct {
 		name       string
-		remoteAddr string // distinct per case so the shared login rate limiter doesn't interfere
+		remoteAddr string // distinct per case so the shared rate limiter doesn't interfere
 		username   string
 		password   string
 		wantStatus int
-	}{
-		{"alice valid password", "203.0.113.1:1", "alice", "alice-s3cret-1", http.StatusOK},
-		{"bob valid password", "203.0.113.2:1", "bob", "bob-s3cret-2", http.StatusOK},
-		{"alice wrong password", "203.0.113.3:1", "alice", "not-the-password", http.StatusUnauthorized},
-		{"bob wrong password", "203.0.113.4:1", "bob", "not-the-password", http.StatusUnauthorized},
-		{"unknown user", "203.0.113.5:1", "carol", "whatever", http.StatusUnauthorized},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			reqBody, err := json.Marshal(map[string]string{
-				"username": tt.username,
-				"password": tt.password,
-			})
-			if err != nil {
-				t.Fatalf("marshal request body: %v", err)
-			}
-
-			req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(reqBody))
-			req.RemoteAddr = tt.remoteAddr
-			req.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, req)
-
-			if w.Code != tt.wantStatus {
-				t.Fatalf("status = %d, want %d (body: %s)", w.Code, tt.wantStatus, w.Body.String())
-			}
-
-			if tt.wantStatus != http.StatusOK {
-				return
-			}
-
-			var resp struct {
-				Authenticated bool   `json:"authenticated"`
-				Username      string `json:"username"`
-			}
-			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
-			if !resp.Authenticated {
-				t.Error("authenticated = false, want true")
-			}
-			if resp.Username != tt.username {
-				t.Errorf("username = %q, want %q", resp.Username, tt.username)
-			}
-		})
-	}
-}
-
-// TestLoginStampsRole drives the real Login handler against an
-// AUTH_USER_PASS (admin) and an AUTH_VIEWER_USER_PASS (viewer), each with a
-// freshly generated bcrypt hash, and asserts the session/response role
-// matches which map the username was found in. Credentials are generated at
-// test time; nothing here is a real credential.
-func TestLoginStampsRole(t *testing.T) {
-	adminHash, err := bcrypt.GenerateFromPassword([]byte("admin-s3cret-1"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("bcrypt.GenerateFromPassword(admin): %v", err)
-	}
-	viewerHash, err := bcrypt.GenerateFromPassword([]byte("viewer-s3cret-2"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("bcrypt.GenerateFromPassword(viewer): %v", err)
-	}
-
-	t.Setenv("AUTH_USER_PASS", fmt.Sprintf("admin:%s", adminHash))
-	t.Setenv("AUTH_VIEWER_USER_PASS", fmt.Sprintf("viewer:%s", viewerHash))
-	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
-	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).Login))
-
-	tests := []struct {
-		name       string
-		remoteAddr string // distinct per case so the shared login rate limiter doesn't interfere
-		username   string
-		password   string
-		wantStatus int
+		wantUser   string
 		wantRole   string
 	}{
-		{"admin valid password", "203.0.113.11:1", "admin", "admin-s3cret-1", http.StatusOK, "admin"},
-		{"viewer valid password", "203.0.113.12:1", "viewer", "viewer-s3cret-2", http.StatusOK, "viewer"},
-		{"admin wrong password", "203.0.113.13:1", "admin", "not-the-password", http.StatusUnauthorized, ""},
-		{"viewer wrong password", "203.0.113.14:1", "viewer", "not-the-password", http.StatusUnauthorized, ""},
+		{"admin valid password", "203.0.113.1:1", "alice", adminPassword, http.StatusOK, "alice", store.RoleAdmin},
+		{"viewer valid password", "203.0.113.2:1", "bob", viewerPassword, http.StatusOK, "bob", store.RoleViewer},
+		{"username casing is canonicalised", "203.0.113.3:1", "ALICE", adminPassword, http.StatusOK, "alice", store.RoleAdmin},
+		{"admin wrong password", "203.0.113.4:1", "alice", "not-the-password", http.StatusUnauthorized, "", ""},
+		{"viewer wrong password", "203.0.113.5:1", "bob", "not-the-password", http.StatusUnauthorized, "", ""},
+		{"unknown user", "203.0.113.6:1", "dave", "whatever-password", http.StatusUnauthorized, "", ""},
+		{"disabled user with the right password", "203.0.113.7:1", "carol", disabledPassword, http.StatusUnauthorized, "", ""},
 	}
 
 	for _, tt := range tests {
@@ -359,6 +255,10 @@ func TestLoginStampsRole(t *testing.T) {
 			}
 
 			if tt.wantStatus != http.StatusOK {
+				// A failed login must not hand out a session cookie.
+				if cookie := w.Header().Get("Set-Cookie"); cookie != "" {
+					t.Errorf("failed login set a cookie: %q", cookie)
+				}
 				return
 			}
 
@@ -373,9 +273,89 @@ func TestLoginStampsRole(t *testing.T) {
 			if !resp.Authenticated {
 				t.Error("authenticated = false, want true")
 			}
+			if resp.Username != tt.wantUser {
+				t.Errorf("username = %q, want %q", resp.Username, tt.wantUser)
+			}
 			if resp.Role != tt.wantRole {
 				t.Errorf("role = %q, want %q", resp.Role, tt.wantRole)
 			}
 		})
+	}
+}
+
+// TestLoginStampsLastLogin: a successful login records when it happened; a
+// failed one must not.
+func TestLoginStampsLastLogin(t *testing.T) {
+	const password = "alice-s3cret-password"
+
+	st := newTestStore(t)
+	ctx := t.Context()
+
+	alice, err := st.CreateUser(ctx, "alice", password, store.RoleAdmin)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if alice.LastLogin != nil {
+		t.Fatalf("last_login = %v before any login, want nil", alice.LastLogin)
+	}
+
+	sessMgr := utils.InitSessionManager()
+	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).Login))
+
+	login := func(remoteAddr, password string) int {
+		reqBody, err := json.Marshal(map[string]string{"username": "alice", "password": password})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(reqBody))
+		req.RemoteAddr = remoteAddr
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	if code := login("203.0.113.21:1", "wrong-password-here"); code != http.StatusUnauthorized {
+		t.Fatalf("failed login status = %d, want 401", code)
+	}
+	after, err := st.GetUserByID(ctx, alice.ID)
+	if err != nil || after == nil {
+		t.Fatalf("GetUserByID: %v, %v", after, err)
+	}
+	if after.LastLogin != nil {
+		t.Errorf("last_login = %v after a failed login, want nil", after.LastLogin)
+	}
+
+	if code := login("203.0.113.22:1", password); code != http.StatusOK {
+		t.Fatalf("successful login status = %d, want 200", code)
+	}
+	after, err = st.GetUserByID(ctx, alice.ID)
+	if err != nil || after == nil {
+		t.Fatalf("GetUserByID: %v, %v", after, err)
+	}
+	if after.LastLogin == nil {
+		t.Error("last_login is nil after a successful login")
+	}
+}
+
+// TestLoginWithoutStore: if the process somehow serves a login before the
+// database is open, it must fail with a server error rather than panic or,
+// worse, let the caller in.
+func TestLoginWithoutStore(t *testing.T) {
+	store.SetDefault(nil)
+
+	sessMgr := utils.InitSessionManager()
+	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).Login))
+
+	reqBody, err := json.Marshal(map[string]string{"username": "alice", "password": "whatever-password"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(reqBody))
+	req.RemoteAddr = "203.0.113.31:1"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
 	}
 }

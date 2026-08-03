@@ -22,7 +22,9 @@ RUN pnpm run build
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 2 — build the Go backend (embeds the built UI via -tags=prod)
 # ──────────────────────────────────────────────────────────────────────────
-FROM golang:1.24-alpine AS backend
+# Must be >= the `go` directive in backend/go.mod (1.25.0, raised by
+# modernc.org/sqlite), otherwise the build stalls on a toolchain download.
+FROM golang:1.25-alpine AS backend
 WORKDIR /app
 
 # Download modules first (cached until go.mod/go.sum change).
@@ -33,10 +35,16 @@ COPY backend/ ./
 COPY --from=frontend /app/dist ./ui/dist
 
 # Static, stripped, reproducible binary. CGO off → runs on distroless/scratch.
+# The SQLite driver is modernc.org/sqlite (pure Go) precisely so this stays
+# possible; a cgo-based driver would not link here.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux \
     go build -tags=prod -trimpath -ldflags="-s -w" -o /main main.go
+
+# Staging directory for the runtime volume mount point. It exists only to be
+# copied (with the right ownership) into the runtime stage below.
+RUN mkdir -p /data
 
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 3 — minimal, non-root runtime image
@@ -53,12 +61,24 @@ LABEL org.opencontainers.image.title="Garage WebUI-NG" \
 
 COPY --from=backend /main /main
 
+# The user database lives here. Baking /data into the image owned by 65532 is
+# what makes it writable: Docker seeds a fresh named volume from the image
+# directory, so the volume inherits that ownership and the non-root process
+# can create its database. Without this the app fails fast at startup with
+# "cannot open user database".
+COPY --from=backend --chown=65532:65532 /data /data
+
 # distroless "nonroot" runs as uid/gid 65532 — no root in the final image.
 USER nonroot:nonroot
 
 ENV HOST=0.0.0.0 \
-    PORT=3909
+    PORT=3909 \
+    DB_PATH=/data/garage-webui-ng.db
 EXPOSE 3909
+
+# Users are persistent application state: mount a volume here or every
+# container recreation loses every account.
+VOLUME ["/data"]
 
 # Self-contained probe (no shell/curl in the image); honours PORT and BASE_PATH.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

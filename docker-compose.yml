@@ -32,6 +32,9 @@ services:
       - garage
     volumes:
       - ./garage.toml:/etc/garage.toml:ro
+      # The user database. Without this volume every container recreation
+      # wipes the accounts and the setup wizard starts over.
+      - webui_data:/data
     ports:
       - "${WEBUI_PORT:-3909}:3909"
     environment:
@@ -66,3 +69,4 @@ services:
 volumes:
   garage_meta:
   garage_data:
+  webui_data:
