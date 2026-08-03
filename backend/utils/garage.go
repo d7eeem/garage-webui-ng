@@ -193,3 +193,24 @@ func (g *garage) Fetch(url string, options *FetchOptions) ([]byte, error) {
 
 	return body, nil
 }
+
+// FetchMetrics fetches Garage's Prometheus /metrics endpoint using the
+// metrics_token (distinct from the admin token). Returns the raw text body.
+func (g *garage) FetchMetrics() ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, g.GetAdminEndpoint()+"/metrics", nil)
+	if err != nil {
+		return nil, err
+	}
+	if t := g.Config.Admin.MetricsToken; t != "" {
+		req.Header.Set("Authorization", "Bearer "+t)
+	}
+	res, err := adminHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return nil, fmt.Errorf("metrics endpoint returned status %d (is metrics_token set?)", res.StatusCode)
+	}
+	return io.ReadAll(res.Body)
+}

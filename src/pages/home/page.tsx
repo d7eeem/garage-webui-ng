@@ -1,6 +1,7 @@
 import Page from "@/context/page-context";
 import { useNodesHealth } from "./hooks";
 import StatsCard from "./components/stats-card";
+import MetricsPanel from "./components/metrics-panel";
 import {
   Database,
   DatabaseZap,
@@ -79,6 +80,8 @@ const HomePage = () => {
           value={readableBytes(totalUsage)}
         />
       </section>
+
+      <MetricsPanel />
     </div>
   );
 };

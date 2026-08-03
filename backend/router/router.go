@@ -33,6 +33,9 @@ func HandleApiRouter() *http.ServeMux {
 
 	router.HandleFunc("GET /share/{bucket}/{key...}", browse.ShareObject)
 
+	metrics := &Metrics{}
+	router.HandleFunc("GET /metrics", metrics.Get)
+
 	// Proxy request to garage api endpoint
 	router.HandleFunc("/", ProxyHandler)
 
