@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
-	"khairul169/garage-webui/router"
-	"khairul169/garage-webui/ui"
-	"khairul169/garage-webui/utils"
+	"github.com/d7eeem/garage-webui-ng/router"
+	"github.com/d7eeem/garage-webui-ng/ui"
+	"github.com/d7eeem/garage-webui-ng/utils"
 	"log"
 	"net/http"
 	"os"

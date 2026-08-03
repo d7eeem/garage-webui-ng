@@ -38,7 +38,7 @@ const Sidebar = () => {
           alt="logo"
           className="w-full max-w-[100px] mx-auto"
         />
-        <p className="text-sm font-medium text-center">WebUI</p>
+        <p className="text-sm font-medium text-center">WebUI-NG</p>
       </div>
 
       <Menu className="gap-y-1 flex-1 overflow-y-auto">

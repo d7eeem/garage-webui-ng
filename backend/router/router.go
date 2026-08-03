@@ -1,7 +1,7 @@
 package router
 
 import (
-	"khairul169/garage-webui/middleware"
+	"github.com/d7eeem/garage-webui-ng/middleware"
 	"net/http"
 )
 

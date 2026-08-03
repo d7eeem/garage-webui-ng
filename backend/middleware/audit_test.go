@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"khairul169/garage-webui/utils"
+	"github.com/d7eeem/garage-webui-ng/utils"
 )
 
 // TestAuditLog verifies the audit middleware logs state-changing requests

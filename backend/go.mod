@@ -1,4 +1,4 @@
-module khairul169/garage-webui
+module github.com/d7eeem/garage-webui-ng
 
 go 1.23.0
 

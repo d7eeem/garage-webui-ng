@@ -1,7 +1,7 @@
 package router
 
 import (
-	"khairul169/garage-webui/utils"
+	"github.com/d7eeem/garage-webui-ng/utils"
 	"net/http"
 	"strconv"
 	"strings"
