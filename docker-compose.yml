@@ -1,26 +1,68 @@
+name: garage-webui-ng
+
+# Production-ready Compose stack: a Garage node + Garage WebUI-NG.
+# Copy .env.example to .env and adjust before `docker compose up -d`.
+# Values below read from .env via ${VAR:-default} interpolation.
+
 services:
   garage:
     image: dxflrs/garage:v2.0.0
     container_name: garage
-    volumes:
-      - ./garage.toml:/etc/garage.toml
-      - ./meta:/var/lib/garage/meta
-      - ./data:/var/lib/garage/data
-    restart: unless-stopped
-    ports:
-      - 3900:3900
-      - 3901:3901
-      - 3902:3902
-      - 3903:3903
-
-  webui:
-    image: khairul169/garage-webui:latest
-    container_name: garage-webui
     restart: unless-stopped
     volumes:
       - ./garage.toml:/etc/garage.toml:ro
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
     ports:
-      - 3909:3909
+      - "3900:3900" # S3 API
+      - "3901:3901" # RPC
+      - "3902:3902" # Web (static website hosting)
+      - "3903:3903" # Admin API
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  webui:
+    image: ghcr.io/d7eeem/garage-webui-ng:${WEBUI_TAG:-latest}
+    container_name: garage-webui-ng
+    restart: unless-stopped
+    depends_on:
+      - garage
+    volumes:
+      - ./garage.toml:/etc/garage.toml:ro
+    ports:
+      - "${WEBUI_PORT:-3909}:3909"
     environment:
-      API_BASE_URL: "http://garage:3903"
-      S3_ENDPOINT_URL: "http://garage:3900"
+      API_BASE_URL: ${API_BASE_URL:-http://garage:3903}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://garage:3900}
+      # Optional — see .env.example. Empty values are simply ignored.
+      S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-}
+      AUTH_USER_PASS: ${AUTH_USER_PASS:-}
+      AUTH_VIEWER_USER_PASS: ${AUTH_VIEWER_USER_PASS:-}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-}
+      BASE_PATH: ${BASE_PATH:-}
+    healthcheck:
+      test: ["CMD", "/main", "-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      # Optional Traefik reverse-proxy integration. Set traefik.enable=true and
+      # adjust the Host rule once a Traefik instance is in front of this stack.
+      - "traefik.enable=false"
+      - "traefik.http.routers.garage-webui-ng.rule=Host(`storage.example.com`)"
+      - "traefik.http.routers.garage-webui-ng.entrypoints=websecure"
+      - "traefik.http.routers.garage-webui-ng.tls.certresolver=letsencrypt"
+      - "traefik.http.services.garage-webui-ng.loadbalancer.server.port=3909"
+
+volumes:
+  garage_meta:
+  garage_data:
