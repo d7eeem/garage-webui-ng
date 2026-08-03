@@ -232,7 +232,11 @@ func (b *Browse) DeleteObject(w http.ResponseWriter, r *http.Request) {
 	// Delete directory and its content
 	if isDirectory && recursive {
 		var deleted int
-		var failed []map[string]string
+		// Initialized non-nil so the JSON response always carries "errors":[]
+		// rather than "errors":null when nothing failed — a nil slice
+		// marshals to null, and the frontend calls .map/.length on this
+		// field unconditionally.
+		failed := []map[string]string{}
 		var continuationToken *string
 
 		for {
@@ -327,7 +331,11 @@ func (b *Browse) BulkDeleteObjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	deleted := 0
-	var failed []map[string]string
+	// Initialized non-nil so the JSON response always carries "errors":[]
+	// rather than "errors":null when nothing failed — a nil slice marshals
+	// to null, and the frontend calls .map/.length on this field
+	// unconditionally.
+	failed := []map[string]string{}
 	for _, batch := range chunkObjectIdentifiers(ids, maxListKeys) {
 		res, err := client.DeleteObjects(r.Context(), &s3.DeleteObjectsInput{
 			Bucket: aws.String(bucket),

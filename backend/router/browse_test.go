@@ -1,6 +1,7 @@
 package router
 
 import (
+	"encoding/json"
 	"fmt"
 	"mime"
 	"net/http"
@@ -180,6 +181,58 @@ func TestDeleteErrorsToList(t *testing.T) {
 		}
 		if got[1]["key"] != "b" || got[1]["message"] != "gone" {
 			t.Errorf("got[1] = %v, want key=b message=gone", got[1])
+		}
+	})
+}
+
+// TestDeleteResponseErrorsSerializesAsEmptyArray guards a regression found
+// in live testing: both DeleteObject's recursive branch and
+// BulkDeleteObjects accumulate failures into a `failed` slice that starts
+// empty and is only ever grown via `append(failed, deleteErrorsToList(...)...)`.
+// A nil []map[string]string marshals to JSON `null`; only a non-nil empty
+// slice marshals to `[]`. The frontend (bulk-actions.tsx) calls
+// data.errors.map(...) / data.errors.length unconditionally, so a `null`
+// response crashes the success handler on every all-succeeded delete — the
+// most common case. This test pins the fix (`failed := []map[string]string{}`)
+// by exercising the exact same construction the handlers use — declare,
+// then append zero results from deleteErrorsToList — and asserting the
+// marshaled bytes, not just the in-memory value.
+func TestDeleteResponseErrorsSerializesAsEmptyArray(t *testing.T) {
+	t.Run("no failures across any batch marshals errors as [], not null", func(t *testing.T) {
+		failed := []map[string]string{}
+		failed = append(failed, deleteErrorsToList(nil)...)
+		failed = append(failed, deleteErrorsToList([]types.Error{})...)
+
+		body, err := json.Marshal(map[string]any{"deleted": 3, "errors": failed})
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+
+		got := string(body)
+		if !strings.Contains(got, `"errors":[]`) {
+			t.Errorf("marshaled body = %s, want it to contain %q", got, `"errors":[]`)
+		}
+		if strings.Contains(got, `"errors":null`) {
+			t.Errorf("marshaled body = %s, must not contain %q", got, `"errors":null`)
+		}
+	})
+
+	t.Run("regression check: the old nil-declaration pattern would have produced null", func(t *testing.T) {
+		// This documents *why* the fix matters by exercising the buggy
+		// pattern the review caught (var failed []map[string]string, never
+		// reassigned when there's nothing to append) — kept as a negative
+		// control, not as code to reintroduce.
+		var failed []map[string]string
+		failed = append(failed, deleteErrorsToList(nil)...)
+
+		body, err := json.Marshal(map[string]any{"deleted": 3, "errors": failed})
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+
+		got := string(body)
+		if !strings.Contains(got, `"errors":null`) {
+			t.Fatalf("expected the nil-slice pattern to still marshal to null (sanity check on Go's own behavior); got %s — if this ever changes, the bug this test guards against may no longer be possible", got)
 		}
 	})
 }

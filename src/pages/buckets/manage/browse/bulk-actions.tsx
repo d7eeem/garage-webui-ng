@@ -27,7 +27,12 @@ const BulkActions = ({ bucketName, selected, setSelected }: Props) => {
 
   const bulkDelete = useBulkDelete(bucketName, {
     onSuccess: (data, keys) => {
-      const failedKeys = new Set(data.errors.map((e) => e.key));
+      // Belt-and-suspenders: the backend always returns a real array (fixed
+      // after a null-vs-[] regression was caught in live testing), but
+      // normalize defensively here too so a future response-shape slip
+      // can't crash this handler with "Cannot read properties of null".
+      const errors = data.errors ?? [];
+      const failedKeys = new Set(errors.map((e) => e.key));
       const succeededKeys = keys.filter((key) => !failedKeys.has(key));
 
       // Only drop the keys that are actually gone — a failed key stays
@@ -40,14 +45,16 @@ const BulkActions = ({ bucketName, selected, setSelected }: Props) => {
 
       queryClient.invalidateQueries({ queryKey: ["browse", bucketName] });
 
-      if (data.errors.length === 0) {
+      if (errors.length === 0) {
         toast.success(
           `Deleted ${data.deleted} object${data.deleted === 1 ? "" : "s"}`
         );
         setResult(null);
         onClose();
       } else {
-        setResult(data);
+        // Store the normalized errors array so the result panel below can
+        // also read result.errors without its own null guard.
+        setResult({ ...data, errors });
       }
     },
     onError: handleError,
