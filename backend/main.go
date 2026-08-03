@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/d7eeem/garage-webui-ng/router"
+	"github.com/d7eeem/garage-webui-ng/store"
 	"github.com/d7eeem/garage-webui-ng/ui"
 	"github.com/d7eeem/garage-webui-ng/utils"
 
@@ -39,13 +40,44 @@ func main() {
 		log.Println("Cannot load garage config!", err)
 	}
 
-	if utils.GetEnv("AUTH_USER_PASS", "") == "" {
-		log.Println("WARNING: AUTH_USER_PASS is not set — the web UI and the " +
-			"Garage admin API proxy are accessible without authentication. " +
-			"Set AUTH_USER_PASS or restrict network access to this port.")
+	basePath := os.Getenv("BASE_PATH")
+	host := utils.GetEnv("HOST", "0.0.0.0")
+	port := utils.GetEnv("PORT", "3909")
+	addr := fmt.Sprintf("%s:%s", host, port)
+
+	// The user database is the one piece of state this service owns. Failing
+	// to open it means nobody can log in and authentication is mandatory, so
+	// there is nothing useful to serve — fail fast and loudly instead of
+	// starting a UI that can only return errors.
+	dbPath := store.DBPath()
+	st, err := store.Open(dbPath)
+	if err != nil {
+		log.Fatalf("cannot open user database at %s: %v", dbPath, err)
+	}
+	defer st.Close()
+	store.SetDefault(st)
+	log.Printf("User database: %s", dbPath)
+
+	// One-time migration off the legacy environment variables. After this the
+	// database is authoritative and AUTH_USER_PASS is ignored forever.
+	imported, err := store.ImportLegacyUsers(
+		context.Background(), st,
+		utils.GetEnv("AUTH_USER_PASS", ""),
+		utils.GetEnv("AUTH_VIEWER_USER_PASS", ""),
+	)
+	if err != nil {
+		log.Printf("legacy user import failed: %v", err)
+	}
+	if imported > 0 {
+		log.Printf("Initial administrator imported from AUTH_USER_PASS (%d user(s)).", imported)
 	}
 
-	basePath := os.Getenv("BASE_PATH")
+	if count, err := st.CountUsers(context.Background()); err != nil {
+		log.Printf("cannot count users: %v", err)
+	} else if count == 0 {
+		log.Printf("No users configured — open http://%s%s/setup to create the first administrator.", addr, basePath)
+	}
+
 	mux := http.NewServeMux()
 
 	// Serve API
@@ -59,10 +91,6 @@ func main() {
 	if basePath != "" {
 		mux.Handle("/", http.RedirectHandler(basePath, http.StatusMovedPermanently))
 	}
-
-	host := utils.GetEnv("HOST", "0.0.0.0")
-	port := utils.GetEnv("PORT", "3909")
-	addr := fmt.Sprintf("%s:%s", host, port)
 
 	srv := &http.Server{
 		Addr:    addr,
