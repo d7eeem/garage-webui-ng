@@ -13,8 +13,10 @@ import { InputField } from "@/components/ui/input";
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useBucketContext } from "../context";
+import { useAuth } from "@/hooks/useAuth";
 
 const AliasesSection = () => {
+  const { canWrite } = useAuth();
   const { bucket: data } = useBucketContext();
 
   const queryClient = useQueryClient();
@@ -40,11 +42,14 @@ const AliasesSection = () => {
 
       <div className="flex flex-row flex-wrap gap-2 mt-2">
         {aliases.map((alias: string) => (
-          <Chips key={alias} onRemove={() => onRemoveAlias(alias)}>
+          <Chips
+            key={alias}
+            onRemove={canWrite ? () => onRemoveAlias(alias) : undefined}
+          >
             {alias}
           </Chips>
         ))}
-        <AddAliasDialog id={data?.id} />
+        {canWrite && <AddAliasDialog id={data?.id} />}
       </div>
     </div>
   );

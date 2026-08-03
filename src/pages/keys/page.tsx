@@ -8,8 +8,10 @@ import { toast } from "sonner";
 import { copyToClipboard, handleError } from "@/lib/utils";
 import { useCallback, useMemo, useState } from "react";
 import api from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
 
 const KeysPage = () => {
+  const { canWrite } = useAuth();
   const { data, refetch } = useKeys();
   const [search, setSearch] = useState("");
   const [secretKeys, setSecretKeys] = useState<Record<string, string>>({});
@@ -95,7 +97,7 @@ const KeysPage = () => {
                       onClick={() => copyToClipboard(key.id)}
                     />
                   </div>
-                  {!secretKeys[key.id] ? (
+                  {!canWrite ? <></> : !secretKeys[key.id] ? (
                     <Button
                       icon={Eye}
                       size="sm"
@@ -121,11 +123,13 @@ const KeysPage = () => {
                   )}
 
                   <span>
-                    <Button
-                      color="ghost"
-                      icon={Trash}
-                      onClick={() => onRemove(key.id)}
-                    />
+                    {canWrite && (
+                      <Button
+                        color="ghost"
+                        icon={Trash}
+                        onClick={() => onRemove(key.id)}
+                      />
+                    )}
                   </span>
                 </Table.Row>
               ))}

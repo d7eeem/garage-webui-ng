@@ -10,8 +10,10 @@ import Button from "@/components/ui/button";
 import { InputField } from "@/components/ui/input";
 import { ToggleField } from "@/components/ui/toggle";
 import { useBucketContext } from "../context";
+import { useAuth } from "@/hooks/useAuth";
 
 const WebsiteAccessSection = () => {
+  const { canWrite } = useAuth();
   const { bucket: data, bucketName } = useBucketContext();
   const { data: config } = useConfig();
   const form = useForm<WebsiteConfigSchema>({
@@ -68,7 +70,12 @@ const WebsiteAccessSection = () => {
         </Button>
       </div>
 
-      <ToggleField form={form} name="websiteAccess" label="Enabled" />
+      <ToggleField
+        form={form}
+        name="websiteAccess"
+        label="Enabled"
+        disabled={!canWrite}
+      />
 
       {isEnabled && (
         <>
@@ -77,11 +84,13 @@ const WebsiteAccessSection = () => {
               form={form}
               name="websiteConfig.indexDocument"
               title="Index Document"
+              disabled={!canWrite}
             />
             <InputField
               form={form}
               name="websiteConfig.errorDocument"
               title="Error Document"
+              disabled={!canWrite}
             />
           </div>
 

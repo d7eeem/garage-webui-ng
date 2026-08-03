@@ -264,3 +264,79 @@ func TestLoginMultiUser(t *testing.T) {
 		})
 	}
 }
+
+// TestLoginStampsRole drives the real Login handler against an
+// AUTH_USER_PASS (admin) and an AUTH_VIEWER_USER_PASS (viewer), each with a
+// freshly generated bcrypt hash, and asserts the session/response role
+// matches which map the username was found in. Credentials are generated at
+// test time; nothing here is a real credential.
+func TestLoginStampsRole(t *testing.T) {
+	adminHash, err := bcrypt.GenerateFromPassword([]byte("admin-s3cret-1"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt.GenerateFromPassword(admin): %v", err)
+	}
+	viewerHash, err := bcrypt.GenerateFromPassword([]byte("viewer-s3cret-2"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt.GenerateFromPassword(viewer): %v", err)
+	}
+
+	t.Setenv("AUTH_USER_PASS", fmt.Sprintf("admin:%s", adminHash))
+	t.Setenv("AUTH_VIEWER_USER_PASS", fmt.Sprintf("viewer:%s", viewerHash))
+	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
+	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).Login))
+
+	tests := []struct {
+		name       string
+		remoteAddr string // distinct per case so the shared login rate limiter doesn't interfere
+		username   string
+		password   string
+		wantStatus int
+		wantRole   string
+	}{
+		{"admin valid password", "203.0.113.11:1", "admin", "admin-s3cret-1", http.StatusOK, "admin"},
+		{"viewer valid password", "203.0.113.12:1", "viewer", "viewer-s3cret-2", http.StatusOK, "viewer"},
+		{"admin wrong password", "203.0.113.13:1", "admin", "not-the-password", http.StatusUnauthorized, ""},
+		{"viewer wrong password", "203.0.113.14:1", "viewer", "not-the-password", http.StatusUnauthorized, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reqBody, err := json.Marshal(map[string]string{
+				"username": tt.username,
+				"password": tt.password,
+			})
+			if err != nil {
+				t.Fatalf("marshal request body: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(reqBody))
+			req.RemoteAddr = tt.remoteAddr
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body: %s)", w.Code, tt.wantStatus, w.Body.String())
+			}
+
+			if tt.wantStatus != http.StatusOK {
+				return
+			}
+
+			var resp struct {
+				Authenticated bool   `json:"authenticated"`
+				Username      string `json:"username"`
+				Role          string `json:"role"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if !resp.Authenticated {
+				t.Error("authenticated = false, want true")
+			}
+			if resp.Role != tt.wantRole {
+				t.Errorf("role = %q, want %q", resp.Role, tt.wantRole)
+			}
+		})
+	}
+}

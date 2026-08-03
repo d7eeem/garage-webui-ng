@@ -12,12 +12,14 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { InputField } from "@/components/ui/input";
 import { useEffect } from "react";
+import { useAuth } from "@/hooks/useAuth";
 
 type Props = {
   prefix: string;
 };
 
 const Actions = ({ prefix }: Props) => {
+  const { canWrite } = useAuth();
   const { bucketName } = useBucketContext();
   const queryClient = useQueryClient();
 
@@ -54,6 +56,12 @@ const Actions = ({ prefix }: Props) => {
     input.click();
     input.remove();
   };
+
+  if (!canWrite) {
+    // Upload + Create Folder are the only actions here; nothing read-only
+    // to keep for a viewer.
+    return null;
+  }
 
   return (
     <>

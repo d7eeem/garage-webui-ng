@@ -5,8 +5,10 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useRemoveBucket } from "../hooks";
 import { toast } from "sonner";
 import { handleError } from "@/lib/utils";
+import { useAuth } from "@/hooks/useAuth";
 
 const MenuButton = () => {
+  const { canWrite } = useAuth();
   const { id } = useParams();
   const navigate = useNavigate();
 
@@ -23,6 +25,11 @@ const MenuButton = () => {
       removeBucket.mutate(id!);
     }
   };
+
+  if (!canWrite) {
+    // Only mutating actions live in this menu; nothing read-only to keep.
+    return null;
+  }
 
   return (
     <Dropdown end>

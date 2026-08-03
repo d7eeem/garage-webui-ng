@@ -8,8 +8,10 @@ import { useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { Plug } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
 
 const ConnectNodeDialog = () => {
+  const { canWrite } = useAuth();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const queryClient = useQueryClient();
 
@@ -42,6 +44,10 @@ const ConnectNodeDialog = () => {
   const onSubmit = form.handleSubmit((values) => {
     connectNode.mutate(values.nodeId);
   });
+
+  if (!canWrite) {
+    return null;
+  }
 
   return (
     <>

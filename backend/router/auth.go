@@ -104,15 +104,21 @@ func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	users := parseUserPass(utils.GetEnv("AUTH_USER_PASS", ""))
-	if len(users) == 0 {
+	admins := parseUserPass(utils.GetEnv("AUTH_USER_PASS", ""))
+	viewers := parseUserPass(utils.GetEnv("AUTH_VIEWER_USER_PASS", ""))
+	if len(admins) == 0 && len(viewers) == 0 {
 		utils.ResponseErrorStatus(w, errors.New("AUTH_USER_PASS not set"), 500)
 		return
 	}
 
 	username := strings.TrimSpace(body.Username)
-	hash, ok := users[username]
-	if !ok || bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.Password)) != nil {
+	role := ""
+	if h, ok := admins[username]; ok && bcrypt.CompareHashAndPassword([]byte(h), []byte(body.Password)) == nil {
+		role = "admin"
+	} else if h, ok := viewers[username]; ok && bcrypt.CompareHashAndPassword([]byte(h), []byte(body.Password)) == nil {
+		role = "viewer"
+	}
+	if role == "" {
 		utils.ResponseErrorStatus(w, errors.New("invalid username or password"), 401)
 		return
 	}
@@ -124,7 +130,8 @@ func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
 
 	utils.Session.Set(r, "authenticated", true)
 	utils.Session.Set(r, "username", username)
-	utils.ResponseSuccess(w, map[string]any{"authenticated": true, "username": username})
+	utils.Session.Set(r, "role", role)
+	utils.ResponseSuccess(w, map[string]any{"authenticated": true, "username": username, "role": role})
 }
 
 func (c *Auth) Logout(w http.ResponseWriter, r *http.Request) {
@@ -149,9 +156,15 @@ func (c *Auth) GetStatus(w http.ResponseWriter, r *http.Request) {
 		username = u
 	}
 
+	role := ""
+	if rr, ok := utils.Session.Get(r, "role").(string); ok {
+		role = rr
+	}
+
 	utils.ResponseSuccess(w, map[string]any{
 		"enabled":       enabled,
 		"authenticated": isAuthenticated,
 		"username":      username,
+		"role":          role,
 	})
 }
