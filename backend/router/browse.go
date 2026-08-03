@@ -434,6 +434,44 @@ func (b *Browse) AbortMultipartUpload(w http.ResponseWriter, r *http.Request) {
 	utils.ResponseSuccess(w, map[string]int{"aborted": 1})
 }
 
+// GET /share/{bucket}/{key...}?expires=<seconds> — presigned GET link.
+func (b *Browse) ShareObject(w http.ResponseWriter, r *http.Request) {
+	if !utils.Garage.IsSharingEnabled() {
+		utils.ResponseErrorStatus(w, fmt.Errorf("sharing is not enabled (set S3_PUBLIC_ENDPOINT_URL)"), http.StatusNotImplemented)
+		return
+	}
+	bucket := r.PathValue("bucket")
+	key := r.PathValue("key")
+
+	const def, max = 3600, 604800 // 1h default, 7d cap (SigV4 ceiling)
+	expires := def
+	if v, err := strconv.Atoi(r.URL.Query().Get("expires")); err == nil && v > 0 {
+		expires = v
+	}
+	if expires > max {
+		expires = max
+	}
+
+	client, err := getS3ClientForEndpoint(bucket, utils.Garage.GetS3PublicEndpoint())
+	if err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+	presign := s3.NewPresignClient(client)
+	req, err := presign.PresignGetObject(r.Context(), &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(time.Duration(expires)*time.Second))
+	if err != nil {
+		utils.ResponseError(w, fmt.Errorf("cannot presign object: %w", err))
+		return
+	}
+	utils.ResponseSuccess(w, map[string]any{
+		"url":            req.URL,
+		"expiresSeconds": expires,
+	})
+}
+
 // maxListKeys is the S3 per-request cap for both ListObjectsV2 results and
 // DeleteObjects inputs. Garage follows the S3 API here.
 const maxListKeys = 1000
@@ -561,13 +599,16 @@ func getBucketCredentials(bucket string) (aws.CredentialsProvider, error) {
 }
 
 func getS3Client(bucket string) (*s3.Client, error) {
+	return getS3ClientForEndpoint(bucket, utils.Garage.GetS3Endpoint())
+}
+
+func getS3ClientForEndpoint(bucket, endpoint string) (*s3.Client, error) {
 	creds, err := getBucketCredentials(bucket)
 	if err != nil {
 		return nil, fmt.Errorf("cannot get credentials for bucket %s: %w", bucket, err)
 	}
 
-	// Determine endpoint and whether to disable HTTPS
-	endpoint := utils.Garage.GetS3Endpoint()
+	// Determine whether to disable HTTPS
 	disableHTTPS := !strings.HasPrefix(endpoint, "https://")
 
 	// AWS config without BaseEndpoint

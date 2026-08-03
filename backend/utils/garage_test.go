@@ -122,3 +122,29 @@ func TestFetchSucceeds(t *testing.T) {
 		t.Errorf("response body = %v, want map containing ok=true", data)
 	}
 }
+
+func TestGetS3PublicEndpointFallback(t *testing.T) {
+	t.Setenv("S3_ENDPOINT_URL", "http://internal:3900")
+	os.Unsetenv("S3_PUBLIC_ENDPOINT_URL")
+
+	if got, want := Garage.GetS3PublicEndpoint(), Garage.GetS3Endpoint(); got != want {
+		t.Errorf("GetS3PublicEndpoint() = %q, want %q (fallback to GetS3Endpoint())", got, want)
+	}
+
+	t.Setenv("S3_PUBLIC_ENDPOINT_URL", "https://public.example.com")
+	if got, want := Garage.GetS3PublicEndpoint(), "https://public.example.com"; got != want {
+		t.Errorf("GetS3PublicEndpoint() = %q, want %q", got, want)
+	}
+}
+
+func TestIsSharingEnabled(t *testing.T) {
+	os.Unsetenv("S3_PUBLIC_ENDPOINT_URL")
+	if Garage.IsSharingEnabled() {
+		t.Errorf("IsSharingEnabled() = true, want false when S3_PUBLIC_ENDPOINT_URL is unset")
+	}
+
+	t.Setenv("S3_PUBLIC_ENDPOINT_URL", "https://public.example.com")
+	if !Garage.IsSharingEnabled() {
+		t.Errorf("IsSharingEnabled() = false, want true when S3_PUBLIC_ENDPOINT_URL is set")
+	}
+}

@@ -9,5 +9,7 @@ import (
 type Config struct{}
 
 func (c *Config) GetAll(w http.ResponseWriter, r *http.Request) {
-	utils.ResponseSuccess(w, schema.NewConfigResponse(utils.Garage.Config))
+	resp := schema.NewConfigResponse(utils.Garage.Config)
+	resp.Sharing = utils.Garage.IsSharingEnabled()
+	utils.ResponseSuccess(w, resp)
 }

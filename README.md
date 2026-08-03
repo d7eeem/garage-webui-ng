@@ -148,6 +148,11 @@ Configurable envs:
 - `API_ADMIN_KEY`: Admin API key.
 - `S3_REGION`: S3 Region.
 - `S3_ENDPOINT_URL`: S3 Endpoint url.
+- `S3_PUBLIC_ENDPOINT_URL`: Publicly-reachable S3 API endpoint used to sign
+  object **share links**. Required for the "private link" share option to appear;
+  when unset, sharing falls back to website URLs only. Must be reachable by
+  whoever receives a link (the internal `S3_ENDPOINT_URL` — e.g. `http://garage:3900`
+  in Docker — is not).
 - `SESSION_COOKIE_SECURE`: Set to `true` to mark the session cookie as `Secure`. Enable this when serving the UI over HTTPS. Defaults to `false`, because browsers reject `Secure` cookies sent over plain HTTP.
 
 ### Authentication

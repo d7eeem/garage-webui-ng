@@ -75,3 +75,13 @@ export const useBulkDelete = (
     ...options,
   });
 };
+
+export const useShareLink = (bucket: string) => {
+  return useMutation({
+    mutationFn: (v: { key: string; expires: number }) =>
+      api.get<{ url: string; expiresSeconds: number }>(
+        `/share/${bucket}/${encodeObjectPath(v.key)}`,
+        { params: { expires: v.expires } }
+      ),
+  });
+};
