@@ -84,7 +84,16 @@ const Sidebar = () => {
           </Dropdown.Menu>
         </Dropdown>
 
-        {auth.isEnabled ? <LogoutButton /> : null}
+        {auth.isEnabled ? (
+          <div className="flex-1 flex flex-col items-stretch min-w-0">
+            {auth.username ? (
+              <p className="text-xs text-base-content/60 truncate px-1">
+                Signed in as {auth.username}
+              </p>
+            ) : null}
+            <LogoutButton />
+          </div>
+        ) : null}
       </div>
     </aside>
   );
