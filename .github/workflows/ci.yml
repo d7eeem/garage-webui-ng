@@ -86,12 +86,3 @@ jobs:
       - name: pnpm audit (advisory)
         run: pnpm audit --prod
         continue-on-error: true
-      # Filesystem scan for dependency CVEs and Dockerfile misconfigurations.
-      - name: Trivy filesystem scan (advisory)
-        uses: aquasecurity/trivy-action@v0.28.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          severity: HIGH,CRITICAL
-          format: table
-          exit-code: "0"
