@@ -232,6 +232,16 @@ If you serve the UI over HTTPS — for example behind a reverse proxy that
 terminates TLS — also set `SESSION_COOKIE_SECURE: "true"` so the session cookie
 is never sent over an unencrypted connection.
 
+### Audit log
+
+The server emits a structured JSON audit line to **stdout** for every
+state-changing request (`POST`/`PUT`/`DELETE`/`PATCH`), including denied ones —
+for example `{"audit":true,"ts":"...","user":"alice","method":"DELETE","path":"/browse/my-bucket/report.pdf","status":200}`.
+Each line records the logged-in `user` (or `-` when unauthenticated), the HTTP
+`method`, `path`, and result `status`. Read requests (`GET`/`HEAD`/`OPTIONS`)
+are not logged, to keep the signal clear. There is no configuration and no
+in-app store — collect the lines with whatever log pipeline you already use.
+
 ### Running
 
 Once your instance of Garage Web UI is started, you can open the web UI at http://your-ip:3909. You can place it behind a reverse proxy to secure it with SSL.
