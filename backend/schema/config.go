@@ -31,8 +31,9 @@ type S3Web struct {
 // return to the browser. Secret-bearing fields (rpc_secret, admin_token,
 // metrics_token) are deliberately absent — the UI never needs them.
 type ConfigResponse struct {
-	S3API S3APIResponse `json:"s3_api"`
-	S3Web S3WebResponse `json:"s3_web"`
+	S3API   S3APIResponse `json:"s3_api"`
+	S3Web   S3WebResponse `json:"s3_web"`
+	Sharing bool          `json:"sharing"`
 }
 
 type S3APIResponse struct {

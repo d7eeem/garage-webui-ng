@@ -31,6 +31,8 @@ func HandleApiRouter() *http.ServeMux {
 	router.HandleFunc("GET /multipart/{bucket}", browse.ListMultipartUploads)
 	router.HandleFunc("DELETE /multipart/{bucket}", browse.AbortMultipartUpload)
 
+	router.HandleFunc("GET /share/{bucket}/{key...}", browse.ShareObject)
+
 	// Proxy request to garage api endpoint
 	router.HandleFunc("/", ProxyHandler)
 

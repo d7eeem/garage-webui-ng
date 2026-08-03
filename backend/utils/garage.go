@@ -81,6 +81,22 @@ func (g *garage) GetS3Endpoint() string {
 	return endpoint
 }
 
+// GetS3PublicEndpoint returns the endpoint used to SIGN share links — it must be
+// reachable by link recipients. Falls back to the internal S3 endpoint.
+func (g *garage) GetS3PublicEndpoint() string {
+	if ep := os.Getenv("S3_PUBLIC_ENDPOINT_URL"); ep != "" {
+		return ep
+	}
+	return g.GetS3Endpoint()
+}
+
+// IsSharingEnabled reports whether a public S3 endpoint is explicitly configured.
+// Presigned share links are only offered when it is (an internal-only endpoint
+// produces links unreachable to external recipients).
+func (g *garage) IsSharingEnabled() bool {
+	return os.Getenv("S3_PUBLIC_ENDPOINT_URL") != ""
+}
+
 func (g *garage) GetS3Region() string {
 	endpoint := os.Getenv("S3_REGION")
 	if len(endpoint) > 0 {
