@@ -7,10 +7,12 @@ FROM node:20-slim AS frontend
 WORKDIR /app
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable
 
-# Install deps first (cached until the lockfile changes).
+# Install deps first (cached until the lockfile changes). The pnpm version is
+# pinned via the "packageManager" field in package.json, so corepack activates
+# exactly that version instead of pulling a possibly-incompatible latest.
 COPY package.json pnpm-lock.yaml ./
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile
 
