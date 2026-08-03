@@ -157,9 +157,9 @@ Configurable envs:
 
 ### Authentication
 
-Enable authentication by setting the `AUTH_USER_PASS` environment variable in the format `username:password_hash`, where `password_hash` is a bcrypt hash of the password.
+Enable authentication by setting the `AUTH_USER_PASS` environment variable to one or more `username:password_hash` entries, where each `password_hash` is a bcrypt hash of that user's password. A single entry (`username:password_hash`) gives one shared login, same as before. For multiple individual logins, separate entries with a comma: `alice:hash1,bob:hash2`. Any listed username/password pair is accepted.
 
-Generate the username and password hash using the following command:
+Generate a username and password hash using the following command (repeat per user):
 
 ```bash
 htpasswd -nbBC 10 "YOUR_USERNAME" "YOUR_PASSWORD"
@@ -181,8 +181,18 @@ webui:
     AUTH_USER_PASS: "username:$$2y$$10$$DSTi9o..."
 ```
 
+For multiple users, join their `username:hash` entries with a comma (each hash
+is still `$$`-doubled the same way):
+
+```yml
+webui:
+  ....
+  environment:
+    AUTH_USER_PASS: "alice:$$2y$$10$$DSTi9o...,bob:$$2y$$10$$AbCdEf..."
+```
+
 If you pass the variable through an `.env` file or `env_file:` instead, use the
-hash **exactly as `htpasswd` printed it** — no doubling. The escaping rule
+hash(es) **exactly as `htpasswd` printed them** — no doubling. The escaping rule
 applies only to values written inline in a Compose `environment:` block.
 
 Login attempts are rate-limited to 10 per minute per client address.

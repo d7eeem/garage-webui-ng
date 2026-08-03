@@ -1,13 +1,17 @@
 package router
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"khairul169/garage-webui/utils"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestLoginLimiterAllowsUpToLimit(t *testing.T) {
@@ -131,5 +135,132 @@ func TestGetStatusAuthEnabledNoSession(t *testing.T) {
 	}
 	if body.Enabled != true || body.Authenticated != false {
 		t.Errorf("got enabled=%v authenticated=%v; want true,false", body.Enabled, body.Authenticated)
+	}
+}
+
+func TestParseUserPass(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want map[string]string
+	}{
+		{
+			name: "single entry",
+			raw:  "u:h",
+			want: map[string]string{"u": "h"},
+		},
+		{
+			name: "two entries",
+			raw:  "a:h1,b:h2",
+			want: map[string]string{"a": "h1", "b": "h2"},
+		},
+		{
+			name: "whitespace around entries trimmed",
+			raw:  " a:h1 , b:h2 ",
+			want: map[string]string{"a": "h1", "b": "h2"},
+		},
+		{
+			name: "empty raw yields no entries",
+			raw:  "",
+			want: map[string]string{},
+		},
+		{
+			name: "malformed entries skipped: no colon, empty user, empty hash, blank",
+			raw:  "noColon,:h,u:,,a:h1",
+			want: map[string]string{"a": "h1"},
+		},
+		{
+			name: "hash containing $ kept intact",
+			raw:  "u:$2y$10$abc",
+			want: map[string]string{"u": "$2y$10$abc"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseUserPass(tt.raw)
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseUserPass(%q) = %#v, want %#v", tt.raw, got, tt.want)
+			}
+			for k, wantV := range tt.want {
+				if gotV, ok := got[k]; !ok || gotV != wantV {
+					t.Errorf("parseUserPass(%q)[%q] = %q, ok=%v; want %q", tt.raw, k, gotV, ok, wantV)
+				}
+			}
+		})
+	}
+}
+
+// TestLoginMultiUser drives the real Login handler (through the scs
+// LoadAndSave middleware, per the GetStatus test pattern above — calling the
+// handler directly panics with "scs: no session data in context") against an
+// AUTH_USER_PASS containing two users with freshly generated bcrypt hashes.
+// Credentials are generated at test time; nothing here is a real credential.
+func TestLoginMultiUser(t *testing.T) {
+	aliceHash, err := bcrypt.GenerateFromPassword([]byte("alice-s3cret-1"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt.GenerateFromPassword(alice): %v", err)
+	}
+	bobHash, err := bcrypt.GenerateFromPassword([]byte("bob-s3cret-2"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt.GenerateFromPassword(bob): %v", err)
+	}
+
+	t.Setenv("AUTH_USER_PASS", fmt.Sprintf("alice:%s,bob:%s", aliceHash, bobHash))
+	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
+	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).Login))
+
+	tests := []struct {
+		name       string
+		remoteAddr string // distinct per case so the shared login rate limiter doesn't interfere
+		username   string
+		password   string
+		wantStatus int
+	}{
+		{"alice valid password", "203.0.113.1:1", "alice", "alice-s3cret-1", http.StatusOK},
+		{"bob valid password", "203.0.113.2:1", "bob", "bob-s3cret-2", http.StatusOK},
+		{"alice wrong password", "203.0.113.3:1", "alice", "not-the-password", http.StatusUnauthorized},
+		{"bob wrong password", "203.0.113.4:1", "bob", "not-the-password", http.StatusUnauthorized},
+		{"unknown user", "203.0.113.5:1", "carol", "whatever", http.StatusUnauthorized},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reqBody, err := json.Marshal(map[string]string{
+				"username": tt.username,
+				"password": tt.password,
+			})
+			if err != nil {
+				t.Fatalf("marshal request body: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(reqBody))
+			req.RemoteAddr = tt.remoteAddr
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body: %s)", w.Code, tt.wantStatus, w.Body.String())
+			}
+
+			if tt.wantStatus != http.StatusOK {
+				return
+			}
+
+			var resp struct {
+				Authenticated bool   `json:"authenticated"`
+				Username      string `json:"username"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if !resp.Authenticated {
+				t.Error("authenticated = false, want true")
+			}
+			if resp.Username != tt.username {
+				t.Errorf("username = %q, want %q", resp.Username, tt.username)
+			}
+		})
 	}
 }

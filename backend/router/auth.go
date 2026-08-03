@@ -58,6 +58,25 @@ func (l *loginLimiter) allow(key string, now time.Time) bool {
 
 var loginAttempts = newLoginLimiter(10, time.Minute)
 
+// parseUserPass parses AUTH_USER_PASS into username→bcrypt-hash. Entries are
+// comma-separated; within an entry, the FIRST ':' splits username from hash
+// (bcrypt hashes never contain ',' or ':'). A single "user:hash" yields one entry.
+func parseUserPass(raw string) map[string]string {
+	users := map[string]string{}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		i := strings.Index(entry, ":")
+		if i <= 0 || i == len(entry)-1 {
+			continue // malformed: no ':', empty user, or empty hash
+		}
+		users[strings.TrimSpace(entry[:i])] = entry[i+1:]
+	}
+	return users
+}
+
 // clientIP extracts a rate-limiting key from the request. RemoteAddr is used
 // directly: this service is typically behind a reverse proxy, and trusting
 // X-Forwarded-For without knowing the proxy topology would let a client choose
@@ -85,13 +104,15 @@ func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userPass := strings.Split(utils.GetEnv("AUTH_USER_PASS", ""), ":")
-	if len(userPass) < 2 {
+	users := parseUserPass(utils.GetEnv("AUTH_USER_PASS", ""))
+	if len(users) == 0 {
 		utils.ResponseErrorStatus(w, errors.New("AUTH_USER_PASS not set"), 500)
 		return
 	}
 
-	if strings.TrimSpace(body.Username) != userPass[0] || bcrypt.CompareHashAndPassword([]byte(userPass[1]), []byte(body.Password)) != nil {
+	username := strings.TrimSpace(body.Username)
+	hash, ok := users[username]
+	if !ok || bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.Password)) != nil {
 		utils.ResponseErrorStatus(w, errors.New("invalid username or password"), 401)
 		return
 	}
@@ -102,9 +123,8 @@ func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.Session.Set(r, "authenticated", true)
-	utils.ResponseSuccess(w, map[string]bool{
-		"authenticated": true,
-	})
+	utils.Session.Set(r, "username", username)
+	utils.ResponseSuccess(w, map[string]any{"authenticated": true, "username": username})
 }
 
 func (c *Auth) Logout(w http.ResponseWriter, r *http.Request) {
@@ -124,8 +144,14 @@ func (c *Auth) GetStatus(w http.ResponseWriter, r *http.Request) {
 		isAuthenticated = true
 	}
 
-	utils.ResponseSuccess(w, map[string]bool{
+	username := ""
+	if u, ok := utils.Session.Get(r, "username").(string); ok {
+		username = u
+	}
+
+	utils.ResponseSuccess(w, map[string]any{
 		"enabled":       enabled,
 		"authenticated": isAuthenticated,
+		"username":      username,
 	})
 }
