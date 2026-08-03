@@ -4,6 +4,7 @@ import { readableBytes } from "@/lib/utils";
 import WebsiteAccessSection from "./overview-website-access";
 import AliasesSection from "./overview-aliases";
 import QuotaSection from "./overview-quota";
+import MultipartUploadsSection from "./multipart-uploads";
 import { useBucketContext } from "../context";
 
 const OverviewTab = () => {
@@ -41,6 +42,8 @@ const OverviewTab = () => {
             </div>
           </div>
         </div>
+
+        <MultipartUploadsSection />
       </Card>
     </div>
   );
