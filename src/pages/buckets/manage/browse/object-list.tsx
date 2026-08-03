@@ -15,13 +15,22 @@ import { useBucketContext } from "../context";
 import ObjectActions from "./object-actions";
 import GotoTopButton from "@/components/ui/goto-top-btn";
 import Button from "@/components/ui/button";
+import Checkbox from "@/components/ui/checkbox";
+import { Dispatch, SetStateAction } from "react";
 
 type Props = {
   prefix?: string;
   onPrefixChange?: (prefix: string) => void;
+  selected: Set<string>;
+  setSelected: Dispatch<SetStateAction<Set<string>>>;
 };
 
-const ObjectList = ({ prefix, onPrefixChange }: Props) => {
+const ObjectList = ({
+  prefix,
+  onPrefixChange,
+  selected,
+  setSelected,
+}: Props) => {
   const { bucketName } = useBucketContext();
   const {
     data,
@@ -37,6 +46,34 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
   const objects = pages.flatMap((page) => page.objects);
   const currentPrefix = pages[0]?.prefix ?? "";
 
+  const allLoadedKeys = objects.map((object) => currentPrefix + object.objectKey);
+  const allLoadedSelected =
+    allLoadedKeys.length > 0 && allLoadedKeys.every((key) => selected.has(key));
+
+  const toggleSelectAll = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allLoadedSelected) {
+        allLoadedKeys.forEach((key) => next.delete(key));
+      } else {
+        allLoadedKeys.forEach((key) => next.add(key));
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectOne = (key: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
   const onObjectClick = (object: Object) => {
     // object.url arrives percent-encoded from the API; do not re-encode.
     window.open(API_URL + object.url + "?view=1", "_blank");
@@ -46,6 +83,13 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
     <div className="overflow-x-auto min-h-[400px]">
       <Table>
         <Table.Head>
+          <span>
+            <Checkbox
+              checked={allLoadedSelected}
+              onChange={toggleSelectAll}
+              aria-label="Select all loaded objects"
+            />
+          </span>
           <span>Name</span>
           <span>Size</span>
           <span>Last Modified</span>
@@ -54,7 +98,7 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
         <Table.Body>
           {isLoading ? (
             <tr>
-              <td colSpan={3}>
+              <td colSpan={4}>
                 <div className="h-[320px] flex items-center justify-center">
                   <Loading />
                 </div>
@@ -62,7 +106,7 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
             </tr>
           ) : error ? (
             <tr>
-              <td colSpan={3}>
+              <td colSpan={4}>
                 <Alert status="error" icon={<CircleXIcon />}>
                   <span>{error.message}</span>
                 </Alert>
@@ -70,7 +114,7 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
             </tr>
           ) : !prefixes.length && !objects.length ? (
             <tr>
-              <td className="text-center py-16" colSpan={3}>
+              <td className="text-center py-16" colSpan={4}>
                 No objects
               </td>
             </tr>
@@ -81,6 +125,7 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
               key={prefix}
               className="hover:bg-neutral/60 hover:text-neutral-content group"
             >
+              <td />
               <td
                 className="cursor-pointer"
                 role="button"
@@ -106,12 +151,20 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
                 ? object.objectKey.substring(0, extIdx)
                 : object.objectKey;
             const ext = extIdx >= 0 ? object.objectKey.substring(extIdx) : null;
+            const fullKey = currentPrefix + object.objectKey;
 
             return (
               <tr
                 key={object.objectKey}
                 className="hover:bg-neutral/60 hover:text-neutral-content group"
               >
+                <td>
+                  <Checkbox
+                    checked={selected.has(fullKey)}
+                    onChange={() => toggleSelectOne(fullKey)}
+                    aria-label={`Select ${object.objectKey}`}
+                  />
+                </td>
                 <td
                   className="cursor-pointer"
                   role="button"
@@ -140,7 +193,7 @@ const ObjectList = ({ prefix, onPrefixChange }: Props) => {
 
           {hasNextPage ? (
             <tr>
-              <td colSpan={4} className="text-center">
+              <td colSpan={5} className="text-center">
                 <Button
                   color="ghost"
                   onClick={() => fetchNextPage()}

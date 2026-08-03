@@ -7,6 +7,7 @@ import ObjectListNavigator from "./object-list-navigator";
 import Actions from "./actions";
 import { useBucketContext } from "../context";
 import ShareDialog from "./share-dialog";
+import BulkActions from "./bulk-actions";
 
 const getInitialPrefixes = (searchParams: URLSearchParams) => {
   const prefix = searchParams.get("prefix");
@@ -18,18 +19,24 @@ const getInitialPrefixes = (searchParams: URLSearchParams) => {
 };
 
 const BrowseTab = () => {
-  const { bucket } = useBucketContext();
+  const { bucket, bucketName } = useBucketContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const [prefixHistory, setPrefixHistory] = useState<string[]>(
     getInitialPrefixes(searchParams)
   );
   const [curPrefix, setCurPrefix] = useState(prefixHistory.length - 1);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const prefix = prefixHistory[curPrefix] || "";
     const newParams = new URLSearchParams(searchParams);
     newParams.set("prefix", prefix);
     setSearchParams(newParams);
+  }, [curPrefix]);
+
+  // Selection is scoped to the current prefix by design: navigating clears it.
+  useEffect(() => {
+    setSelected(new Set());
   }, [curPrefix]);
 
   const gotoPrefix = (prefix: string) => {
@@ -49,6 +56,8 @@ const BrowseTab = () => {
     );
   }
 
+  const prefix = prefixHistory[curPrefix] || "";
+
   return (
     <div>
       <Card className="pb-2">
@@ -56,12 +65,22 @@ const BrowseTab = () => {
           curPrefix={curPrefix}
           setCurPrefix={setCurPrefix}
           prefixHistory={prefixHistory}
-          actions={<Actions prefix={prefixHistory[curPrefix] || ""} />}
+          actions={<Actions prefix={prefix} />}
         />
 
+        {selected.size > 0 && (
+          <BulkActions
+            bucketName={bucketName}
+            selected={selected}
+            setSelected={setSelected}
+          />
+        )}
+
         <ObjectList
-          prefix={prefixHistory[curPrefix] || ""}
+          prefix={prefix}
           onPrefixChange={gotoPrefix}
+          selected={selected}
+          setSelected={setSelected}
         />
 
         <ShareDialog />

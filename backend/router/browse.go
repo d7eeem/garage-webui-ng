@@ -232,6 +232,11 @@ func (b *Browse) DeleteObject(w http.ResponseWriter, r *http.Request) {
 	// Delete directory and its content
 	if isDirectory && recursive {
 		var deleted int
+		// Initialized non-nil so the JSON response always carries "errors":[]
+		// rather than "errors":null when nothing failed — a nil slice
+		// marshals to null, and the frontend calls .map/.length on this
+		// field unconditionally.
+		failed := []map[string]string{}
 		var continuationToken *string
 
 		for {
@@ -259,11 +264,8 @@ func (b *Browse) DeleteObject(w http.ResponseWriter, r *http.Request) {
 					utils.ResponseError(w, fmt.Errorf("cannot delete object: %w", err))
 					return
 				}
-				if len(res.Errors) > 0 {
-					utils.ResponseError(w, fmt.Errorf("cannot delete object: %v", res.Errors[0]))
-					return
-				}
 				deleted += len(res.Deleted)
+				failed = append(failed, deleteErrorsToList(res.Errors)...)
 			}
 
 			if objects.IsTruncated == nil || !*objects.IsTruncated {
@@ -275,7 +277,7 @@ func (b *Browse) DeleteObject(w http.ResponseWriter, r *http.Request) {
 			continuationToken = objects.NextContinuationToken
 		}
 
-		utils.ResponseSuccess(w, map[string]int{"deleted": deleted})
+		utils.ResponseSuccess(w, map[string]any{"deleted": deleted, "errors": failed})
 		return
 	}
 
@@ -291,6 +293,62 @@ func (b *Browse) DeleteObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.ResponseSuccess(w, res)
+}
+
+// POST /browse/{bucket}  body: {"action":"delete","keys":["a","b/c",...]}
+func (b *Browse) BulkDeleteObjects(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+	var body struct {
+		Action string   `json:"action"`
+		Keys   []string `json:"keys"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+	if body.Action != "delete" {
+		utils.ResponseErrorStatus(w, fmt.Errorf("unsupported action %q", body.Action), http.StatusBadRequest)
+		return
+	}
+	if len(body.Keys) == 0 {
+		utils.ResponseSuccess(w, map[string]any{"deleted": 0, "errors": []any{}})
+		return
+	}
+	if len(body.Keys) > maxListKeys {
+		utils.ResponseErrorStatus(w, fmt.Errorf("too many keys: %d (max %d)", len(body.Keys), maxListKeys), http.StatusBadRequest)
+		return
+	}
+
+	client, err := getS3Client(bucket)
+	if err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+
+	ids := make([]types.ObjectIdentifier, 0, len(body.Keys))
+	for _, k := range body.Keys {
+		ids = append(ids, types.ObjectIdentifier{Key: aws.String(k)})
+	}
+
+	deleted := 0
+	// Initialized non-nil so the JSON response always carries "errors":[]
+	// rather than "errors":null when nothing failed — a nil slice marshals
+	// to null, and the frontend calls .map/.length on this field
+	// unconditionally.
+	failed := []map[string]string{}
+	for _, batch := range chunkObjectIdentifiers(ids, maxListKeys) {
+		res, err := client.DeleteObjects(r.Context(), &s3.DeleteObjectsInput{
+			Bucket: aws.String(bucket),
+			Delete: &types.Delete{Objects: batch},
+		})
+		if err != nil {
+			utils.ResponseError(w, fmt.Errorf("cannot delete objects: %w", err))
+			return
+		}
+		deleted += len(res.Deleted)
+		failed = append(failed, deleteErrorsToList(res.Errors)...)
+	}
+	utils.ResponseSuccess(w, map[string]any{"deleted": deleted, "errors": failed})
 }
 
 // GET /multipart/{bucket} — list unfinished multipart uploads for a bucket.
@@ -409,6 +467,19 @@ func chunkObjectIdentifiers(keys []types.ObjectIdentifier, size int) [][]types.O
 		batches = append(batches, keys[start:end])
 	}
 	return batches
+}
+
+// deleteErrorsToList converts S3 per-object delete errors into a flat,
+// JSON-friendly slice. Reports ALL failures, not just the first.
+func deleteErrorsToList(errs []types.Error) []map[string]string {
+	out := make([]map[string]string, 0, len(errs))
+	for _, e := range errs {
+		out = append(out, map[string]string{
+			"key":     aws.ToString(e.Key),
+			"message": aws.ToString(e.Message),
+		})
+	}
+	return out
 }
 
 // browseObjectURL builds the API path for an object, percent-encoding both the

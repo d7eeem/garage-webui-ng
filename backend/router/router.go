@@ -26,6 +26,7 @@ func HandleApiRouter() *http.ServeMux {
 	router.HandleFunc("GET /browse/{bucket}/{key...}", browse.GetOneObject)
 	router.HandleFunc("PUT /browse/{bucket}/{key...}", browse.PutObject)
 	router.HandleFunc("DELETE /browse/{bucket}/{key...}", browse.DeleteObject)
+	router.HandleFunc("POST /browse/{bucket}", browse.BulkDeleteObjects)
 
 	router.HandleFunc("GET /multipart/{bucket}", browse.ListMultipartUploads)
 	router.HandleFunc("DELETE /multipart/{bucket}", browse.AbortMultipartUpload)
