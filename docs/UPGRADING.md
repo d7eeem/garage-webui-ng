@@ -138,6 +138,119 @@ keeping; it is now defence in depth rather than the only control.
 
 ---
 
+### Path C — binary under systemd (LXC, VM, bare metal)
+
+Paths A and B assume Docker. If you run the binary directly — the usual shape
+inside an LXC container alongside Garage — the account migration works exactly
+the same, but **two things bite that Docker users never see**.
+
+> #### ⚠️ Trap 1: `ExecStart` still points at the old binary
+>
+> The binary is now named `garage-webui-ng`, not `garage-webui`. Installing the
+> new one **next to** the old one and restarting the service changes nothing:
+> systemd keeps launching the old path, which ignores `DB_PATH` and every other
+> new setting. The service starts cleanly and looks healthy, so this is easy to
+> miss. Update `ExecStart`.
+
+> #### ⚠️ Trap 2: the default `DB_PATH` is relative
+>
+> `DB_PATH` defaults to `./data/garage-webui-ng.db` — relative to the process's
+> working directory. Under systemd that directory is `/` unless you set
+> `WorkingDirectory=`, so the app tries to create `/data` and **fails fast** with
+> `cannot open user database`. Always set an absolute `DB_PATH` in the unit.
+
+**1. Note your current credentials.** You will sign in with the same ones.
+
+```bash
+sudo grep -rE 'AUTH_USER_PASS|AUTH_VIEWER_USER_PASS' \
+  /etc/systemd/system/garage-webui.service /etc/garage-webui.env 2>/dev/null
+```
+
+**2. Install the new binary.** Releases publish `linux-amd64` and `linux-arm64`;
+check your architecture with `uname -m` (`x86_64` → amd64, `aarch64` → arm64).
+
+```bash
+ARCH=amd64   # or arm64
+curl -fsSL -o /tmp/garage-webui-ng \
+  "https://github.com/d7eeem/garage-webui-ng/releases/latest/download/garage-webui-ng-linux-${ARCH}"
+sudo install -m755 /tmp/garage-webui-ng /usr/local/bin/garage-webui-ng
+```
+
+**3. Create the database directory.** If the unit has a `User=`, chown it to
+that account; a unit with no `User=` runs as root and needs no chown.
+
+```bash
+sudo mkdir -p /var/lib/garage-webui-ng
+# only if the service runs as a dedicated user:
+# sudo chown garage-webui:garage-webui /var/lib/garage-webui-ng
+```
+
+**4. Update the unit** (`sudo systemctl edit --full garage-webui`). Change
+`ExecStart` to the new binary and add an absolute `DB_PATH`. Keep
+`AUTH_USER_PASS` set **for this one start** — it is what migrates your accounts.
+
+```ini
+[Unit]
+Description=Garage WebUI-NG
+After=network.target garage.service
+
+[Service]
+Environment="PORT=3909"
+Environment="CONFIG_PATH=/etc/garage.toml"
+Environment="S3_ENDPOINT_URL=http://127.0.0.1:3900"
+Environment="S3_REGION=garage"
+# Absolute, on persistent storage. Without this the service fails to start.
+Environment="DB_PATH=/var/lib/garage-webui-ng/users.db"
+# AUTH_USER_PASS lives here; import-only from this release on. Remove it after
+# you have confirmed the import (step 7).
+EnvironmentFile=/etc/garage-webui.env
+ExecStart=/usr/local/bin/garage-webui-ng
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+**5. Reload and restart.**
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart garage-webui
+```
+
+**6. Confirm you are actually on the new binary.**
+
+```bash
+journalctl -u garage-webui -n 30 --no-pager | grep -E 'User database|imported|No users configured'
+```
+
+```
+User database: /var/lib/garage-webui-ng/users.db
+Initial administrator imported from AUTH_USER_PASS (1 user(s)).
+```
+
+`User database:` is the reliable tell — **the old binary never logs it.** If it
+is absent, `ExecStart` is still pointing at the old path (Trap 1).
+
+**7. Log in** with your existing credentials, check **Settings → Users**, then
+remove `AUTH_USER_PASS` / `AUTH_VIEWER_USER_PASS` from
+`/etc/garage-webui.env` and restart. From here on they are dead weight.
+
+**Rollback** is the mirror image: point `ExecStart` back at the old binary and
+keep the environment variables set. Keep the old binary on disk until you are
+confident — the old release reads the variables live and never touches the
+database file, so the two can coexist.
+
+#### Troubleshooting (systemd-specific)
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Service restarts fine but nothing changed — no `/setup`, no new UI | `ExecStart` still names the old binary | Point it at `garage-webui-ng`, `daemon-reload`, restart |
+| `cannot open user database … no such file or directory` then exit | Relative default `DB_PATH` resolving against `/` | Set an absolute `Environment="DB_PATH=…"` |
+| `cannot open user database … permission denied` | The `User=` cannot write the directory | `chown` it to that user |
+| Accounts vanish after a host rebuild | `DB_PATH` points somewhere ephemeral (`/tmp`, a tmpfs) | Move it under `/var/lib` |
+
+---
+
 ### Verifying the migration
 
 ```bash
