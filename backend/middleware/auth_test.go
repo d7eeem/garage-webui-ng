@@ -76,6 +76,48 @@ func TestIsViewerAllowed(t *testing.T) {
 			want:   false,
 		},
 		{
+			// The privilege leak this check exists to close: /admin/users is a
+			// GET, and "every GET is allowed" would otherwise hand a read-only
+			// viewer the full roster of accounts, roles and sign-in times.
+			name:   "listing users is denied",
+			method: http.MethodGet,
+			target: "/admin/users",
+			want:   false,
+		},
+		{
+			name:   "creating a user is denied",
+			method: http.MethodPost,
+			target: "/admin/users",
+			want:   false,
+		},
+		{
+			name:   "updating a user is denied",
+			method: http.MethodPatch,
+			target: "/admin/users/1",
+			want:   false,
+		},
+		{
+			name:   "deleting a user is denied",
+			method: http.MethodDelete,
+			target: "/admin/users/1",
+			want:   false,
+		},
+		{
+			name:   "resetting a password is denied",
+			method: http.MethodPost,
+			target: "/admin/users/1/reset-password",
+			want:   false,
+		},
+		{
+			// Any future administration endpoint is denied by default, which is
+			// the point of matching the whole /admin/ prefix rather than
+			// enumerating routes.
+			name:   "an unrelated admin endpoint is denied",
+			method: http.MethodGet,
+			target: "/admin/anything-added-later",
+			want:   false,
+		},
+		{
 			name:   "PUT is denied",
 			method: http.MethodPut,
 			target: "/browse/b/k",
@@ -255,5 +297,47 @@ func TestAuthMiddlewareViewerForbidden(t *testing.T) {
 	}
 	if got := serve(http.MethodPost, "/auth/change-password"); got != http.StatusOK {
 		t.Errorf("viewer POST /auth/change-password = %d, want 200", got)
+	}
+}
+
+// TestAuthMiddlewareAdminAPIIsAdminOnly is the middleware half of the two-layer
+// guard on user administration: a viewer session is stopped here, before the
+// handler runs at all, while an administrator passes straight through. The
+// other half is requireAdmin inside every /admin/* handler.
+func TestAuthMiddlewareAdminAPIIsAdminOnly(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// serve seeds an authenticated session with the given role inside the scs
+	// middleware, then calls the guarded handler in that same request context.
+	serve := func(role, method, target string) (int, bool) {
+		var (
+			code    int
+			reached bool
+		)
+		sessMgr := utils.InitSessionManager()
+		handler := sessMgr.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			utils.Session.Set(r, "authenticated", true)
+			utils.Session.Set(r, "role", role)
+			rec := httptest.NewRecorder()
+			AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached = true
+				next.ServeHTTP(w, r)
+			})).ServeHTTP(rec, r)
+			code = rec.Code
+		}))
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, target, nil))
+		return code, reached
+	}
+
+	if code, reached := serve("viewer", http.MethodGet, "/admin/users"); code != http.StatusForbidden || reached {
+		t.Errorf("viewer GET /admin/users = %d (handler reached = %v), want 403 and not reached", code, reached)
+	}
+	if code, reached := serve("admin", http.MethodGet, "/admin/users"); code != http.StatusOK || !reached {
+		t.Errorf("admin GET /admin/users = %d (handler reached = %v), want 200 and reached", code, reached)
+	}
+	if code, reached := serve("admin", http.MethodDelete, "/admin/users/1"); code != http.StatusOK || !reached {
+		t.Errorf("admin DELETE /admin/users/1 = %d (handler reached = %v), want 200 and reached", code, reached)
 	}
 }
