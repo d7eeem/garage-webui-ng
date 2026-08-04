@@ -18,9 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # No `version:` here on purpose — package.json's "packageManager" field
+      # pins pnpm, and specifying both makes action-setup@v4 fail with
+      # "Multiple versions of pnpm specified".
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -75,9 +76,10 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           cd backend && "$(go env GOPATH)/bin/govulncheck" ./...
       # Frontend dependency audit (advisory).
+      # No `version:` here on purpose — package.json's "packageManager" field
+      # pins pnpm, and specifying both makes action-setup@v4 fail with
+      # "Multiple versions of pnpm specified".
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 20
