@@ -14,6 +14,7 @@ func HandleApiRouter() *http.ServeMux {
 	router := http.NewServeMux()
 	router.HandleFunc("POST /auth/logout", auth.Logout)
 	router.HandleFunc("GET /auth/status", auth.GetStatus)
+	router.HandleFunc("POST /auth/change-password", auth.ChangePassword)
 
 	// First-run wizard. Registered on the inner router — not on mux — so both
 	// routes still pass through AuditLog and AuthMiddleware; the middleware's
@@ -47,6 +48,14 @@ func HandleApiRouter() *http.ServeMux {
 	// Proxy request to garage api endpoint
 	router.HandleFunc("/", ProxyHandler)
 
-	mux.Handle("/", middleware.AuditLog(middleware.AuthMiddleware(router)))
+	// Order matters. AuditLog is outermost so it records the final status of
+	// every write, including the ones rejected below it; the forgery check
+	// comes next so a request without a valid token never reaches the session
+	// logic; AuthMiddleware is innermost, closest to the handlers.
+	//
+	// POST /auth/login is registered on the outer mux above and so bypasses all
+	// three — it is exempt from the token check in any case, being the one
+	// write a caller makes before it has a session.
+	mux.Handle("/", middleware.AuditLog(middleware.CSRF(middleware.AuthMiddleware(router))))
 	return mux
 }

@@ -1,8 +1,10 @@
 package utils
 
 import (
+	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/alexedwards/scs/v2"
@@ -14,9 +16,46 @@ type SessionManager struct {
 
 var Session *SessionManager
 
+const (
+	// defaultSessionLifetimeHours is the absolute cap on a session's age,
+	// counted from the moment it was created. It is reached even on a session
+	// that is in constant use.
+	defaultSessionLifetimeHours = 24
+
+	// defaultSessionIdleTimeoutHours logs out a session that has not been
+	// touched for a while, which is what most self-hosted admin UIs do.
+	defaultSessionIdleTimeoutHours = 2
+)
+
+// envHours reads a positive whole number of hours from the environment. Any
+// value that is absent, unparseable or <= 0 falls back to the default, with a
+// warning for the two cases an operator can actually fix — silently running
+// with a different expiry than the one configured would be worse.
+func envHours(key string, defaultHours int) time.Duration {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return time.Duration(defaultHours) * time.Hour
+	}
+
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("%s=%q is not a number, using %dh", key, raw, defaultHours)
+		return time.Duration(defaultHours) * time.Hour
+	}
+	if n <= 0 {
+		log.Printf("%s=%d must be greater than zero, using %dh", key, n, defaultHours)
+		return time.Duration(defaultHours) * time.Hour
+	}
+	return time.Duration(n) * time.Hour
+}
+
 func InitSessionManager() *scs.SessionManager {
 	sessMgr := scs.New()
-	sessMgr.Lifetime = 24 * time.Hour
+	sessMgr.Lifetime = envHours("SESSION_LIFETIME_HOURS", defaultSessionLifetimeHours)
+
+	// Absolute cap stays at Lifetime; IdleTimeout logs out sessions that have
+	// been untouched for a while, which is what most self-hosted UIs do.
+	sessMgr.IdleTimeout = envHours("SESSION_IDLE_TIMEOUT_HOURS", defaultSessionIdleTimeoutHours)
 
 	// scs defaults: HttpOnly=true, SameSite=Lax, Secure=false. HttpOnly and
 	// SameSite=Lax are what we want and are set explicitly here so a library

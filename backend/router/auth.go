@@ -164,6 +164,94 @@ func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ChangePassword lets a signed-in user replace their own password. It is the
+// only write a read-only viewer may make (middleware.isViewerAllowed), and it
+// only ever touches the account named by the caller's session — the request
+// body carries no user id, so there is nothing here to point at somebody else.
+//
+// Nothing in this handler may log a password or a hash.
+func (c *Auth) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	username, _ := utils.Session.Get(r, "username").(string)
+	if username == "" {
+		utils.ResponseErrorStatus(w, errors.New("unauthorized"), http.StatusUnauthorized)
+		return
+	}
+
+	var body struct {
+		CurrentPassword string `json:"currentPassword"`
+		NewPassword     string `json:"newPassword"`
+		ConfirmPassword string `json:"confirmPassword"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		// The decoder error is not echoed back: it can quote the request body,
+		// which is exactly where the passwords are.
+		utils.ResponseErrorStatus(w, errors.New("invalid request body"), http.StatusBadRequest)
+		return
+	}
+
+	if body.NewPassword != body.ConfirmPassword {
+		utils.ResponseErrorStatus(w, errors.New("passwords do not match"), http.StatusBadRequest)
+		return
+	}
+
+	st := store.Default()
+	if st == nil {
+		utils.ResponseErrorStatus(w, store.ErrNoStore, http.StatusInternalServerError)
+		return
+	}
+
+	user, err := st.GetUserByUsername(r.Context(), username)
+	if err != nil {
+		utils.ResponseError(w, fmt.Errorf("cannot look up user: %w", err))
+		return
+	}
+	if user == nil || user.Disabled {
+		// The session names an account that no longer exists or has been
+		// disabled since it signed in. Treat it as unauthenticated.
+		utils.ResponseErrorStatus(w, errors.New("unauthorized"), http.StatusUnauthorized)
+		return
+	}
+
+	// Verifying the current password is a password guess like any other, so it
+	// shares the login limiter. The check has to come *before* the comparison,
+	// otherwise a stolen session becomes an unthrottled oracle for the
+	// password it could not otherwise read.
+	if !loginAttempts.allow(clientIP(r), time.Now()) {
+		utils.ResponseErrorStatus(w, errors.New("too many attempts, try again later"), http.StatusTooManyRequests)
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(body.CurrentPassword)); err != nil {
+		utils.ResponseErrorStatus(w, errors.New("current password is incorrect"), http.StatusUnauthorized)
+		return
+	}
+
+	if body.NewPassword == body.CurrentPassword {
+		utils.ResponseErrorStatus(w, errors.New("the new password must differ from the current one"), http.StatusBadRequest)
+		return
+	}
+
+	if err := st.SetPassword(r.Context(), user.ID, body.NewPassword); err != nil {
+		if errors.Is(err, store.ErrWeakPassword) {
+			utils.ResponseErrorStatus(w, err, http.StatusBadRequest)
+			return
+		}
+		utils.ResponseError(w, fmt.Errorf("cannot change password: %w", err))
+		return
+	}
+
+	// Session-fixation hygiene: a credential change is a privilege change, so
+	// issue a fresh session token while keeping the session's data (the caller
+	// stays signed in).
+	if err := utils.Session.Renew(r); err != nil {
+		log.Printf("cannot renew session for user %d after a password change: %v", user.ID, err)
+	}
+
+	log.Printf("user %q changed their password", user.Username)
+
+	utils.ResponseSuccess(w, true)
+}
+
 func (c *Auth) Logout(w http.ResponseWriter, r *http.Request) {
 	utils.Session.Clear(r)
 	_ = utils.Session.Renew(r)

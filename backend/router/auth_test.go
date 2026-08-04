@@ -11,6 +11,8 @@ import (
 
 	"github.com/d7eeem/garage-webui-ng/store"
 	"github.com/d7eeem/garage-webui-ng/utils"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // newTestStore opens a throwaway user database and installs it as the
@@ -334,6 +336,252 @@ func TestLoginStampsLastLogin(t *testing.T) {
 	}
 	if after.LastLogin == nil {
 		t.Error("last_login is nil after a successful login")
+	}
+}
+
+// changePassword drives the real ChangePassword handler with a session that
+// names sessionUser (empty ⇒ anonymous). The handler is served inside the scs
+// LoadAndSave middleware because it reads the session; calling it directly
+// panics with "scs: no session data in context".
+//
+// remoteAddr is distinct per call site: ChangePassword shares the process-wide
+// login limiter, so cases that reuse an address would throttle each other.
+func changePassword(t *testing.T, sessionUser, remoteAddr string, body map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	sessMgr := utils.InitSessionManager() // also sets the package-global utils.Session
+
+	rec := httptest.NewRecorder()
+	handler := sessMgr.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if sessionUser != "" {
+			utils.Session.Set(r, "authenticated", true)
+			utils.Session.Set(r, "username", sessionUser)
+		}
+		(&Auth{}).ChangePassword(rec, r)
+	}))
+
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/auth/change-password", bytes.NewReader(raw))
+	req.RemoteAddr = remoteAddr
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	return rec
+}
+
+// passwordVerifies reports whether plaintext matches the hash currently stored
+// for the named user. It reads the database, not the response, so it catches a
+// handler that reports success without actually writing.
+func passwordVerifies(t *testing.T, st *store.Store, username, plaintext string) bool {
+	t.Helper()
+	u, err := st.GetUserByUsername(t.Context(), username)
+	if err != nil || u == nil {
+		t.Fatalf("GetUserByUsername(%q) = %v, %v", username, u, err)
+	}
+	return bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(plaintext)) == nil
+}
+
+// TestChangePasswordSuccess: the happy path must actually replace the stored
+// hash — the new password verifies afterwards and the old one no longer does.
+func TestChangePasswordSuccess(t *testing.T) {
+	const (
+		oldPassword = "alice-old-password"
+		newPassword = "alice-new-password"
+	)
+
+	st := newTestStore(t)
+	if _, err := st.CreateUser(t.Context(), "alice", oldPassword, store.RoleAdmin); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	rec := changePassword(t, "alice", "198.51.100.1:1", map[string]string{
+		"currentPassword": oldPassword,
+		"newPassword":     newPassword,
+		"confirmPassword": newPassword,
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !passwordVerifies(t, st, "alice", newPassword) {
+		t.Error("the new password does not verify against the stored hash")
+	}
+	if passwordVerifies(t, st, "alice", oldPassword) {
+		t.Error("the old password still verifies against the stored hash")
+	}
+}
+
+// TestChangePasswordWorksForAViewer: the read-only role owns its own
+// credential too (middleware.isViewerAllowed lets this one write through).
+func TestChangePasswordWorksForAViewer(t *testing.T) {
+	const (
+		oldPassword = "bob-old-password"
+		newPassword = "bob-new-password"
+	)
+
+	st := newTestStore(t)
+	if _, err := st.CreateUser(t.Context(), "bob", oldPassword, store.RoleViewer); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	rec := changePassword(t, "bob", "198.51.100.2:1", map[string]string{
+		"currentPassword": oldPassword,
+		"newPassword":     newPassword,
+		"confirmPassword": newPassword,
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !passwordVerifies(t, st, "bob", newPassword) {
+		t.Error("the new password does not verify against the stored hash")
+	}
+}
+
+// TestChangePasswordRejections covers every way the request can be refused.
+// In all of them the stored hash must be untouched.
+func TestChangePasswordRejections(t *testing.T) {
+	const currentPassword = "alice-current-password"
+
+	tests := []struct {
+		name        string
+		sessionUser string
+		remoteAddr  string
+		body        map[string]string
+		wantStatus  int
+	}{
+		{
+			name:        "no session",
+			sessionUser: "",
+			remoteAddr:  "198.51.100.11:1",
+			body: map[string]string{
+				"currentPassword": currentPassword,
+				"newPassword":     "a-brand-new-password",
+				"confirmPassword": "a-brand-new-password",
+			},
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:        "wrong current password",
+			sessionUser: "alice",
+			remoteAddr:  "198.51.100.12:1",
+			body: map[string]string{
+				"currentPassword": "not-the-current-password",
+				"newPassword":     "a-brand-new-password",
+				"confirmPassword": "a-brand-new-password",
+			},
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:        "confirmation does not match",
+			sessionUser: "alice",
+			remoteAddr:  "198.51.100.13:1",
+			body: map[string]string{
+				"currentPassword": currentPassword,
+				"newPassword":     "a-brand-new-password",
+				"confirmPassword": "a-different-password",
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:        "new password is too short",
+			sessionUser: "alice",
+			remoteAddr:  "198.51.100.14:1",
+			body: map[string]string{
+				"currentPassword": currentPassword,
+				"newPassword":     "short",
+				"confirmPassword": "short",
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:        "new password equals the current one",
+			sessionUser: "alice",
+			remoteAddr:  "198.51.100.15:1",
+			body: map[string]string{
+				"currentPassword": currentPassword,
+				"newPassword":     currentPassword,
+				"confirmPassword": currentPassword,
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:        "session names a user that no longer exists",
+			sessionUser: "ghost",
+			remoteAddr:  "198.51.100.16:1",
+			body: map[string]string{
+				"currentPassword": currentPassword,
+				"newPassword":     "a-brand-new-password",
+				"confirmPassword": "a-brand-new-password",
+			},
+			wantStatus: http.StatusUnauthorized,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := newTestStore(t)
+			if _, err := st.CreateUser(t.Context(), "alice", currentPassword, store.RoleAdmin); err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+
+			rec := changePassword(t, tt.sessionUser, tt.remoteAddr, tt.body)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body: %s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if !passwordVerifies(t, st, "alice", currentPassword) {
+				t.Error("the stored hash changed on a rejected request")
+			}
+		})
+	}
+}
+
+// TestChangePasswordRejectsADisabledAccount: a session that outlived the
+// account being disabled must not be able to reset its credential back into
+// usefulness.
+func TestChangePasswordRejectsADisabledAccount(t *testing.T) {
+	const currentPassword = "carol-current-password"
+
+	st := newTestStore(t)
+	carol, err := st.CreateUser(t.Context(), "carol", currentPassword, store.RoleAdmin)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := st.SetDisabled(t.Context(), carol.ID, true); err != nil {
+		t.Fatalf("SetDisabled: %v", err)
+	}
+
+	rec := changePassword(t, "carol", "198.51.100.21:1", map[string]string{
+		"currentPassword": currentPassword,
+		"newPassword":     "a-brand-new-password",
+		"confirmPassword": "a-brand-new-password",
+	})
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !passwordVerifies(t, st, "carol", currentPassword) {
+		t.Error("the stored hash changed for a disabled account")
+	}
+}
+
+// TestChangePasswordWithoutStore: no database means no way to verify or write
+// a credential, which must be a server error rather than a panic.
+func TestChangePasswordWithoutStore(t *testing.T) {
+	store.SetDefault(nil)
+
+	rec := changePassword(t, "alice", "198.51.100.31:1", map[string]string{
+		"currentPassword": "whatever-password",
+		"newPassword":     "a-brand-new-password",
+		"confirmPassword": "a-brand-new-password",
+	})
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
 	}
 }
 
