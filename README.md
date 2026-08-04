@@ -10,10 +10,10 @@
 [![Docker Publish](https://github.com/d7eeem/garage-webui-ng/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/d7eeem/garage-webui-ng/actions/workflows/docker-publish.yml)
 [![GHCR](https://img.shields.io/badge/ghcr.io-garage--webui--ng-2496ED?logo=docker&logoColor=white)](https://github.com/d7eeem/garage-webui-ng/pkgs/container/garage-webui-ng)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](backend/go.mod)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](backend/go.mod)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](package.json)
 
-[Features](#-key-features) · [Screenshots](#-screenshots) · [Quick Start](#-installation) · [Configuration](#-configuration) · [API](#-api) · [Roadmap](#-roadmap)
+[Features](#-key-features) · [Screenshots](#-screenshots) · [Quick Start](#-installation) · [Configuration](#-configuration) · [API](#-api) · [Authentication](docs/authentication.md) · [Upgrading](docs/UPGRADING.md) · [Roadmap](#-roadmap)
 
 <img src="docs/screenshots/dashboard-dark.png" alt="Garage WebUI-NG dashboard" width="860" />
 
@@ -23,9 +23,9 @@
 
 ## 📖 Overview
 
-**Garage WebUI-NG** is the next-generation web console for operating a [Garage](https://garagehq.deuxfleurs.fr/) cluster. It ships as a **single, self-contained binary** (a Go backend that embeds the compiled React frontend) or as a **~12 MB non-root Docker image**, and it holds no state of its own — it is a thin, secure gateway to your existing Garage cluster.
+**Garage WebUI-NG** is the next-generation web console for operating a [Garage](https://garagehq.deuxfleurs.fr/) cluster. It ships as a **single, self-contained binary** (a Go backend that embeds the compiled React frontend) or as a **~12 MB non-root Docker image**. It is a thin, secure gateway to your existing Garage cluster; the only state it owns is a small SQLite database of its own user accounts.
 
-Point it at a running Garage node and you get a clean dashboard for cluster health, buckets, objects, access keys, static-website hosting, and object sharing — with optional authentication, a read-only operator role, and a structured audit trail.
+Point it at a running Garage node and you get a clean dashboard for cluster health, buckets, objects, access keys, static-website hosting, and object sharing — with built-in user management, a read-only operator role, and a structured audit trail.
 
 ## ✨ Key Features
 
@@ -34,7 +34,7 @@ Point it at a running Garage node and you get a clean dashboard for cluster heal
 - **📁 Object browser** — navigate prefixes, upload and download objects, create folders, **bulk-delete** selections, and clean up orphaned **multipart uploads**.
 - **🔗 Object sharing** — generate expiring **presigned links** for private objects and surface public website URLs, all from one dialog.
 - **🔑 Access keys** — create, inspect, and assign keys to buckets with fine-grained read / write / owner permissions.
-- **🔐 Authentication & roles** — optional session auth with bcrypt-hashed credentials, **multiple users**, and a fail-closed **read-only viewer role**.
+- **🔐 Users & roles** — a **first-run setup wizard**, in-app user management (**Settings → Users**), admin / fail-closed read-only **viewer** roles, self-service password change, and CSRF-protected sessions. No hand-edited environment variables. See [`docs/authentication.md`](docs/authentication.md).
 - **📝 Audit log** — every state-changing request is emitted as a structured JSON line to stdout (who / what / path / status), including denied writes.
 - **🎨 Themed UI** — 10 built-in light/dark themes, fully responsive down to mobile.
 - **🚀 Production-ready** — multi-arch (amd64/arm64) image, non-root runtime, healthcheck, graceful shutdown, and GHCR publishing out of the box.
@@ -55,6 +55,14 @@ Point it at a running Garage node and you get a clean dashboard for cluster heal
 
 [![Share](docs/screenshots/share-export.png)](docs/screenshots/share-export.png)
 
+**First-run setup wizard** — the one-time administrator account on a brand-new instance
+
+[![Setup wizard](docs/screenshots/setup-wizard.png)](docs/screenshots/setup-wizard.png)
+
+| Settings → Users | Settings → Account |
+|:---:|:---:|
+| [![Users](docs/screenshots/settings-users.png)](docs/screenshots/settings-users.png) | [![Account](docs/screenshots/settings-account.png)](docs/screenshots/settings-account.png) |
+
 **Dark mode**
 
 | Dashboard | Object browser |
@@ -69,7 +77,7 @@ Point it at a running Garage node and you get a clean dashboard for cluster heal
 
 ## 🏗️ Architecture
 
-Garage WebUI-NG is a **stateless gateway** between your browser and two Garage APIs.
+Garage WebUI-NG is a **gateway** between your browser and two Garage APIs, plus a small local store for its own user accounts.
 
 ```
           ┌──────────────────────────────────────────────┐
@@ -79,13 +87,16 @@ Garage WebUI-NG is a **stateless gateway** between your browser and two Garage A
           │                  ├─ audit log (stdout)        │
           │                  ├─ reverse proxy  ───────────┼─► Garage Admin API (catch-all)
           │                  └─ S3 client ────────────────┼─► Garage S3 API
-          └──────────────────────────────────────────────┘      (object browse / share)
+          │                        │                      │      (object browse / share)
+          │                  SQLite (users) ──► /data     │
+          └──────────────────────────────────────────────┘
 ```
 
 - **Single artifact** — the Go binary embeds the built frontend via `//go:embed` (release builds only); the same code runs from the non-root Docker image.
 - **Admin API gateway** — a few explicit routes plus a catch-all reverse proxy forward any `/api/v2/…` request to Garage's Admin API with the admin token injected server-side. The token is **never** sent to the browser.
 - **S3 path** — object browsing/upload/download/sharing uses the AWS SDK v2 with per-bucket credentials fetched (and briefly cached) from the Admin API.
 - **Config reuse** — reads your existing `garage.toml` (`CONFIG_PATH`, default `/etc/garage.toml`) for endpoints and tokens; every value can be overridden by an environment variable.
+- **One piece of local state** — user accounts live in a SQLite file at `DB_PATH` (`/data/garage-webui-ng.db` in the image). **Mount a persistent volume there.** Nothing else is stored locally.
 
 See [CLAUDE.md](CLAUDE.md) for a deeper architecture reference.
 
@@ -97,13 +108,16 @@ See [CLAUDE.md](CLAUDE.md) for a deeper architecture reference.
 docker run -d --name garage-webui-ng \
   -p 3909:3909 \
   -v ./garage.toml:/etc/garage.toml:ro \
+  -v garage_webui_data:/data \
   -e API_BASE_URL=http://garage:3903 \
   -e S3_ENDPOINT_URL=http://garage:3900 \
   --restart unless-stopped \
   ghcr.io/d7eeem/garage-webui-ng:latest
 ```
 
-Then open **http://localhost:3909**.
+Then open **http://localhost:3909** and complete the setup wizard to create the first administrator.
+
+> The `-v garage_webui_data:/data` volume holds the user database. **It is required** — without it, every container recreation wipes your accounts and the setup wizard starts over.
 
 ### Prebuilt binary
 
@@ -114,15 +128,19 @@ chmod +x garage-webui-ng-linux-amd64
 API_BASE_URL=http://127.0.0.1:3903 S3_ENDPOINT_URL=http://127.0.0.1:3900 ./garage-webui-ng-linux-amd64
 ```
 
+The user database is created at `./data/garage-webui-ng.db` relative to the working directory; set `DB_PATH` to put it somewhere durable. On first start, open the UI and complete the setup wizard.
+
 ## 🐳 Docker Deployment
 
-The image is multi-arch (`linux/amd64`, `linux/arm64`), runs as a **non-root** user, exposes a **healthcheck**, and shuts down gracefully on `SIGTERM`.
+The image is multi-arch (`linux/amd64`, `linux/arm64`), runs as a **non-root** user (uid/gid `65532`), exposes a **healthcheck**, and shuts down gracefully on `SIGTERM`.
 
 ```bash
 docker pull ghcr.io/d7eeem/garage-webui-ng:latest
 ```
 
 Available tags: `latest`, `2`, `2.0`, `2.0.0`, and `sha-<commit>`.
+
+The image declares `VOLUME ["/data"]` for the user database and ships that directory owned by uid `65532`, so a **named volume** works out of the box. If you bind-mount a host directory instead, `chown 65532:65532` it first — otherwise startup fails with `cannot open user database`.
 
 ## 🧩 Docker Compose Deployment
 
@@ -134,6 +152,8 @@ docker compose up -d
 ```
 
 `docker-compose.yml` includes named volumes, restart policies, healthchecks, JSON log rotation, environment interpolation from `.env`, and optional Traefik reverse-proxy labels. See [`docker-compose.yml`](docker-compose.yml).
+
+The stack mounts the named volume `webui_data` at `/data` for the user database. On first start, open the UI and complete the setup wizard. Upgrading an existing deployment? Follow [`docs/UPGRADING.md`](docs/UPGRADING.md).
 
 ## ⚙️ Configuration
 
@@ -151,18 +171,23 @@ Garage WebUI-NG reads your `garage.toml` and lets every setting be overridden by
 | `HOST` | `0.0.0.0` | Address the server binds to. |
 | `PORT` | `3909` | Port the server listens on. |
 | `BASE_PATH` | *(unset)* | Mount the UI under a path prefix (e.g. `/garage`). |
-| `AUTH_USER_PASS` | *(unset)* | `user:bcrypt-hash` (comma-separated for multiple users). Enables auth. |
-| `AUTH_VIEWER_USER_PASS` | *(unset)* | Read-only viewer accounts, same format. |
-| `SESSION_COOKIE_SECURE` | `false` | Send the session cookie only over HTTPS. |
+| `DB_PATH` | `/data/garage-webui-ng.db` (image)<br>`./data/garage-webui-ng.db` (binary) | SQLite file holding the user accounts. **Must live on persistent storage.** |
+| `SESSION_COOKIE_SECURE` | `false` | Send the session cookie only over HTTPS. Set to `true` behind TLS. |
+| `SESSION_LIFETIME_HOURS` | `24` | Absolute session lifetime, counted from sign-in. |
+| `SESSION_IDLE_TIMEOUT_HOURS` | `2` | Sign out a session left untouched for this long. |
+| `AUTH_USER_PASS` | *(unset)* | **Legacy.** `user:bcrypt-hash` (comma-separated). Imported **once**, on the first start against an empty database, then **ignored forever**. |
+| `AUTH_VIEWER_USER_PASS` | *(unset)* | **Legacy.** Read-only viewer accounts, same format and same one-time import. |
 
-> **Note:** if neither `AUTH_USER_PASS` nor `AUTH_VIEWER_USER_PASS` is set, the UI **and** the admin-token-injecting proxy are open — rely on network isolation, or enable authentication.
+> **Users are not configured with environment variables.** Create the first administrator with the setup wizard, then manage accounts in **Settings → Users**. The two `AUTH_*` variables exist only to carry accounts over from a pre-database release; changing them afterwards has no effect. Full details in [`docs/authentication.md`](docs/authentication.md).
 
 ## 🖱️ Usage
 
-1. Open the UI and land on the **Dashboard** for cluster health and live metrics.
-2. Use **Cluster** to review nodes, capacity, and the layout.
-3. Under **Buckets**, create a bucket, assign an alias, set quotas, or enable website hosting.
-4. Open a bucket's **Browse** tab to manage objects; use **Keys** to mint and assign access keys.
+1. On a brand-new instance, complete the **setup wizard** at `/setup` to create the administrator; it signs you straight in and never reopens.
+2. Land on the **Dashboard** for cluster health and live metrics.
+3. Use **Cluster** to review nodes, capacity, and the layout.
+4. Under **Buckets**, create a bucket, assign an alias, set quotas, or enable website hosting.
+5. Open a bucket's **Browse** tab to manage objects; use **Keys** to mint and assign access keys.
+6. Add colleagues in **Settings → Users** (admin or read-only viewer); change your own password in **Settings → Account**.
 
 ### Importing / Exporting
 
@@ -183,17 +208,29 @@ The backend serves everything under `/api`. It is primarily a **gateway to Garag
 | `POST` | `/api/browse/{bucket}` | Bulk-delete selected objects. |
 | `GET/DELETE` | `/api/multipart/{bucket}` | List / abort orphaned multipart uploads. |
 | `GET` | `/api/share/{bucket}/{key...}?expires=` | Generate a presigned share link. |
-| `POST` | `/api/auth/login` · `/api/auth/logout` · `GET /api/auth/status` | Session auth. |
+| — | `/api/setup`, `/api/auth/*`, `/api/admin/users*` | Setup wizard, sessions, and user administration. |
+
+The authentication and user-administration endpoints — request fields, response
+shapes and every error code — are documented in
+**[`docs/authentication.md` §6](docs/authentication.md#6-api-reference)**, so the
+two cannot drift.
 
 ## 🔒 Security
 
 - **Secrets stay server-side** — `rpc_secret`, `admin_token`, and `metrics_token` are never exposed to the browser (`/api/config` returns a filtered subset).
-- **Optional authentication** — session-based, bcrypt-hashed credentials via `AUTH_USER_PASS`; login is rate-limited and renews the session token.
-- **Read-only viewer role** — `AUTH_VIEWER_USER_PASS` grants a fail-closed role that can view but not mutate (and cannot reveal secret keys).
+- **Authentication is mandatory** — there is no open (no-auth) mode. Every API route requires a session except `GET /api/auth/status`, `GET /api/setup/status`, `POST /api/setup` and `POST /api/auth/login`.
+- **Passwords** — bcrypt at cost 10; minimum 10 characters. **No endpoint ever returns a password or a password hash**, and none is written to the logs.
+- **Sessions** — server-side, with `HttpOnly` + `SameSite=Lax` cookies (`Secure` via `SESSION_COOKIE_SECURE`), an idle timeout *and* an absolute lifetime, and token renewal on every privilege change.
+- **CSRF protection** — a double-submit `X-CSRF-Token` is required on every state-changing request, exempting only login and first-run setup.
+- **Rate-limited login** — 10 attempts per minute per client IP, shared with setup and the current-password check; failures are indistinguishable between unknown, disabled and wrong-password, in message *and* in timing.
+- **Admin / viewer roles** — the viewer role is fail-closed (allowlisted reads, two writes that touch only its own account, no access to secret keys or to user administration), and `/admin/*` is guarded twice, independently.
+- **Lockout guards** — the last enabled administrator cannot be deleted, disabled or demoted, and no admin can demote or delete themselves.
 - **Audit trail** — mutating requests (incl. denied ones) are logged as structured JSON to stdout for your log pipeline.
 - **Hardened runtime** — the Docker image runs as a non-root user with a minimal (distroless) base and no shell.
 
-> Because the open (no-auth) mode proxies the Garage admin token, **always** enable authentication or restrict network access when exposing the UI beyond localhost.
+> Even with authentication mandatory, the backend still proxies the Garage admin token on behalf of a signed-in user. Keep the UI on a trusted network or behind a reverse proxy with TLS (and set `SESSION_COOKIE_SECURE=true`) when exposing it beyond localhost.
+
+Full reference: [`docs/authentication.md`](docs/authentication.md).
 
 ## 🗺️ Roadmap
 
@@ -202,9 +239,13 @@ The backend serves everything under `/api`. It is primarily a **gateway to Garag
 - [x] Presigned share links & correct website URLs
 - [x] Multi-user auth + read-only viewer role
 - [x] Structured audit log
+- [x] Persistent user store, first-run setup wizard & in-app user management
 - [ ] **Full in-browser multipart upload** (resumable, large-file uploads)
 - [ ] Richer static-website hosting management surface
 - [ ] Historical metrics (time-series) view
+- [ ] Fine-grained RBAC (roles & permissions beyond admin / viewer)
+- [ ] Multi-factor authentication (TOTP)
+- [ ] OAuth / OIDC and LDAP sign-in
 
 ## ❓ FAQ
 
@@ -214,10 +255,16 @@ The backend serves everything under `/api`. It is primarily a **gateway to Garag
 
 **A bucket won't browse — why?** Object browsing addresses buckets by **global alias**. Add a global alias to the bucket first.
 
-**How do I generate a bcrypt hash for `AUTH_USER_PASS`?**
+**How do I create users / generate a bcrypt hash?** You don't need one. Create the first administrator with the setup wizard on a new instance, then add accounts in **Settings → Users**. Passwords are hashed by the app.
+
+*Alternative (legacy import):* on a **brand-new** instance whose database is still empty, `AUTH_USER_PASS=user:$2a$...` (comma-separated for several accounts) seeds those accounts once at startup and is then ignored forever. It exists to carry a pre-database deployment across the upgrade — see [`docs/UPGRADING.md`](docs/UPGRADING.md). To produce a hash for that one-time import:
 ```bash
 htpasswd -bnBC 10 "" 'your-password' | tr -d ':\n' | sed 's/^$2y/$2a/'
 ```
+
+**I lost every administrator password — what now?** If one admin can still sign in, reset the other account from **Settings → Users**. If nobody can, the only route is deleting the database file, which **erases all accounts** and reopens the setup wizard — see [`docs/authentication.md` §9](docs/authentication.md#9-lockout--recovery).
+
+**My users disappear after every deploy.** The `/data` volume is not mounted. See [`docs/UPGRADING.md`](docs/UPGRADING.md).
 
 **Why is lint "red" in CI?** A pre-existing lint backlog is tracked separately and runs non-blocking; new code is kept clean.
 
@@ -227,7 +274,7 @@ Contributions are welcome! Please open an issue to discuss substantial changes f
 
 ## 🛠️ Development
 
-**Prerequisites:** Node 20+ with `pnpm` (via `corepack enable`) and Go 1.24+.
+**Prerequisites:** Node 20+ with `pnpm` (via `corepack enable`) and Go 1.25+ (the `go` directive in `backend/go.mod` is `1.25.0`, raised by `modernc.org/sqlite`).
 
 ```bash
 pnpm install
