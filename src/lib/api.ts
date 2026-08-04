@@ -28,6 +28,26 @@ export const encodeObjectPath = (key: string) =>
     .map((segment) => encodeURIComponent(segment))
     .join("/");
 
+/**
+ * Reads a cookie by name. Only used for the CSRF token, which is hex and so
+ * needs no decoding.
+ */
+const readCookie = (name: string) =>
+  document.cookie
+    .split("; ")
+    .find((c) => c.startsWith(name + "="))
+    ?.split("=")[1];
+
+/**
+ * Name of the double-submit CSRF cookie/header pair. The server issues the
+ * cookie (deliberately not HttpOnly) on any read and requires the header on
+ * every write except `POST /auth/login` and `POST /setup`.
+ *
+ * Kept in sync with `backend/middleware/csrf.go`.
+ */
+const CSRF_COOKIE_NAME = "csrf_token";
+const CSRF_HEADER_NAME = "X-CSRF-Token";
+
 export class APIError extends Error {
   status!: number;
 
@@ -40,7 +60,12 @@ export class APIError extends Error {
 
 const api = {
   async fetch<T = any>(url: string, options?: Partial<FetchOptions>) {
-    const headers: Record<string, string> = {};
+    // Sent on every request, reads included: it is harmless where the server
+    // does not check it, and attaching it in one place means no caller can
+    // forget it on a write.
+    const headers: Record<string, string> = {
+      [CSRF_HEADER_NAME]: readCookie(CSRF_COOKIE_NAME) ?? "",
+    };
     const _url = new URL(API_URL + url, window.location.origin);
 
     if (options?.params) {

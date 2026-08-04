@@ -10,8 +10,8 @@ import (
 
 // TestIsViewerAllowed exercises the entire security boundary for the
 // read-only viewer role. It must stay fail-closed: any non-GET request that
-// isn't POST /auth/logout is denied, and the one GET carve-out
-// (GetKeyInfo?showSecretKey=true) must also be denied.
+// isn't POST /auth/logout or POST /auth/change-password is denied, and the one
+// GET carve-out (GetKeyInfo?showSecretKey=true) must also be denied.
 func TestIsViewerAllowed(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -48,6 +48,26 @@ func TestIsViewerAllowed(t *testing.T) {
 			method: http.MethodPost,
 			target: "/auth/logout",
 			want:   true,
+		},
+		{
+			// A viewer must be able to rotate their own credential without
+			// asking an administrator. It touches nothing but their own row.
+			name:   "POST change-password is allowed",
+			method: http.MethodPost,
+			target: "/auth/change-password",
+			want:   true,
+		},
+		{
+			name:   "change-password by a non-POST method is denied",
+			method: http.MethodPut,
+			target: "/auth/change-password",
+			want:   false,
+		},
+		{
+			name:   "a path merely prefixed with change-password is denied",
+			method: http.MethodPost,
+			target: "/auth/change-password/other",
+			want:   false,
 		},
 		{
 			name:   "DELETE is denied",
@@ -232,5 +252,8 @@ func TestAuthMiddlewareViewerForbidden(t *testing.T) {
 	}
 	if got := serve(http.MethodGet, "/buckets"); got != http.StatusOK {
 		t.Errorf("viewer GET /buckets = %d, want 200", got)
+	}
+	if got := serve(http.MethodPost, "/auth/change-password"); got != http.StatusOK {
+		t.Errorf("viewer POST /auth/change-password = %d, want 200", got)
 	}
 }

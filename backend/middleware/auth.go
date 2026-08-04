@@ -10,9 +10,9 @@ import (
 // isViewerAllowed is the entire security boundary for the read-only viewer
 // role: fail-closed by construction. Every GET is allowed except the one
 // carve-out that reveals a secret (GetKeyInfo?showSecretKey=true); every
-// non-GET is denied except logout. Any new write served via GET, or any new
-// secret-revealing GET, must be added here explicitly — do not loosen this
-// to "allow all GET".
+// non-GET is denied except the two that only affect the caller's own account.
+// Any new write served via GET, or any new secret-revealing GET, must be added
+// here explicitly — do not loosen this to "allow all GET".
 func isViewerAllowed(r *http.Request) bool {
 	if r.Method == http.MethodGet {
 		// one carve-out: never let a viewer reveal a secret access key
@@ -22,8 +22,12 @@ func isViewerAllowed(r *http.Request) bool {
 		}
 		return true
 	}
-	// the only non-GET a viewer may call is logout
-	return r.Method == http.MethodPost && r.URL.Path == "/auth/logout"
+	// A read-only viewer may still end their session and change their OWN
+	// password. Nothing else that mutates state is permitted.
+	if r.Method == http.MethodPost {
+		return r.URL.Path == "/auth/logout" || r.URL.Path == "/auth/change-password"
+	}
+	return false
 }
 
 // isPublicPath reports whether a request may be served without an
