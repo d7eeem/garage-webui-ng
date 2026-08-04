@@ -195,6 +195,31 @@ Garage WebUI-NG reads your `garage.toml` and lets every setting be overridden by
 - **Export (download / share)** — use the per-row **download** action, or the row menu → **Share** to generate an expiring **presigned link** (15 min → 7 days) or copy the object's **public website URL** when website hosting is enabled.
 - **Bulk operations** — select multiple objects to delete them in one request.
 
+### Command-line flags
+
+The binary is also its own recovery tool. These run offline against the user
+database at `DB_PATH` and exit — they never start the server.
+
+| Flag | Purpose |
+|---|---|
+| `-health` | Local health probe; exits `0` when healthy. Used by the container `HEALTHCHECK`. |
+| `-list-users` | Print every account (username, role, status, last login, created). Never prints a password or a hash. |
+| `-reset-password <username>` | Prompt for a new password and set it — the fix for a forgotten admin password, with no data loss. |
+| `-create-admin <username>` | Prompt for a password and create a new administrator, even when accounts already exist. |
+
+```bash
+garage-webui-ng -list-users
+garage-webui-ng -reset-password admin
+
+# Docker (-it is required so there is a terminal to prompt on)
+docker compose exec webui /main -reset-password admin
+```
+
+The password is **prompted for with echo disabled, never passed as an
+argument** (argv leaks into shell history and `ps`), and there is deliberately
+**no HTTP equivalent** — these need local write access to the database file.
+Details: [`docs/authentication.md` §9](docs/authentication.md#9-lockout--recovery).
+
 ## 🔌 API
 
 The backend serves everything under `/api`. It is primarily a **gateway to Garage's Admin API v2** (any unmatched `/api/v2/…` request is reverse-proxied with the admin token attached), plus first-class endpoints:
@@ -262,7 +287,7 @@ Full reference: [`docs/authentication.md`](docs/authentication.md).
 htpasswd -bnBC 10 "" 'your-password' | tr -d ':\n' | sed 's/^$2y/$2a/'
 ```
 
-**I lost every administrator password — what now?** If one admin can still sign in, reset the other account from **Settings → Users**. If nobody can, the only route is deleting the database file, which **erases all accounts** and reopens the setup wizard — see [`docs/authentication.md` §9](docs/authentication.md#9-lockout--recovery).
+**I lost every administrator password — what now?** If one admin can still sign in, reset the other account from **Settings → Users**. If nobody can and you have shell access to the host, run `garage-webui-ng -reset-password <user>` (or `-create-admin <user>`) — it prompts for the new password and loses no data. Deleting the database file, which **erases all accounts**, is only the last resort — see [`docs/authentication.md` §9](docs/authentication.md#9-lockout--recovery).
 
 **My users disappear after every deploy.** The `/data` volume is not mounted. See [`docs/UPGRADING.md`](docs/UPGRADING.md).
 
