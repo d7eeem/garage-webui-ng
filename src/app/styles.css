@@ -24,10 +24,6 @@
     @apply p-4 md:p-8;
   }
 
-  .dropdown-content {
-    @apply z-10;
-  }
-
   .table.table-sm th,
   .table.table-xs th {
     @apply py-4;

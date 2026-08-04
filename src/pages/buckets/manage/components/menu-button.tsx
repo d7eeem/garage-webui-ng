@@ -1,6 +1,5 @@
-import Button from "@/components/ui/button";
+import Menu, { MenuItem } from "@/components/ui/menu";
 import { EllipsisVertical, Trash } from "lucide-react";
-import { Dropdown } from "react-daisyui";
 import { useNavigate, useParams } from "react-router-dom";
 import { useRemoveBucket } from "../hooks";
 import { toast } from "sonner";
@@ -32,17 +31,20 @@ const MenuButton = () => {
   }
 
   return (
-    <Dropdown end>
-      <Dropdown.Toggle button={false}>
-        <Button icon={EllipsisVertical} color="ghost" />
-      </Dropdown.Toggle>
-
-      <Dropdown.Menu>
-        <Dropdown.Item onClick={onRemove} className="bg-error/10 text-error">
-          <Trash /> Remove
-        </Dropdown.Item>
-      </Dropdown.Menu>
-    </Dropdown>
+    <Menu
+      trigger={<EllipsisVertical size={18} />}
+      triggerLabel="Bucket actions"
+      placement="bottom-end"
+    >
+      <MenuItem
+        icon={Trash}
+        iconSize={24}
+        onClick={onRemove}
+        className="bg-error/10 text-error"
+      >
+        Remove
+      </MenuItem>
+    </Menu>
   );
 };
 
