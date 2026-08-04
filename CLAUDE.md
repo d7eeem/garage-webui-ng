@@ -11,7 +11,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Frontend lives at the repo root (package manager: **pnpm**); backend under `backend/` (**Go 1.25+** — the `go` directive in `backend/go.mod` is `1.25.0`, raised by `modernc.org/sqlite`; the Docker builder is `golang:1.25-alpine`).
+Frontend lives at the repo root (package manager: **pnpm**); backend under `backend/` (**Go 1.25+** — the `go` directive in `backend/go.mod` is `1.25.0`, raised by `modernc.org/sqlite`; CI and the Docker builder pin an **exact** patch,
+currently `1.25.12` / `golang:1.25.12-alpine`, in four places that must stay in
+lockstep — `.github/workflows/ci.yml` ×2, `.github/workflows/release.yml`, and
+the `Dockerfile`. A floating minor is what let a vulnerable stdlib patch into a
+release build, and `govulncheck` in CI is blocking, so renewing the pin is a
+deliberate chore rather than something to loosen).
 
 Frontend:
 - `pnpm install`

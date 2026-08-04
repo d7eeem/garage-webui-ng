@@ -24,7 +24,15 @@ RUN pnpm run build
 # ──────────────────────────────────────────────────────────────────────────
 # Must be >= the `go` directive in backend/go.mod (1.25.0, raised by
 # modernc.org/sqlite), otherwise the build stalls on a toolchain download.
-FROM golang:1.25-alpine AS backend
+#
+# Pinned to an EXACT patch on purpose. A floating `golang:1.25-alpine` resolves
+# to whatever 1.25.x the registry serves that day, which is how a stdlib patch
+# with open advisories ends up in a release image. 1.25.12 carries the fixes for
+# the crypto/tls, crypto/x509, net, net/textproto and net/http/httputil
+# advisories that govulncheck (blocking, in ci.yml) flags on older 1.25 patches.
+# Bumping this is a deliberate chore: keep it in lockstep with the `go-version`
+# pins in .github/workflows/ci.yml (x2) and .github/workflows/release.yml.
+FROM golang:1.25.12-alpine AS backend
 WORKDIR /app
 
 # Download modules first (cached until go.mod/go.sum change).
