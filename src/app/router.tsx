@@ -5,6 +5,7 @@ import MainLayout from "@/components/layouts/main-layout";
 import { BASE_PATH } from "@/lib/consts";
 
 const LoginPage = lazy(() => import("@/pages/auth/login"));
+const SetupPage = lazy(() => import("@/pages/setup/page"));
 const ClusterPage = lazy(() => import("@/pages/cluster/page"));
 const HomePage = lazy(() => import("@/pages/home/page"));
 const BucketsPage = lazy(() => import("@/pages/buckets/page"));
@@ -13,6 +14,13 @@ const KeysPage = lazy(() => import("@/pages/keys/page"));
 
 const router = createBrowserRouter(
   [
+    {
+      // The first-run wizard sits outside both layouts: each of them redirects
+      // here while the instance has no users, so nesting it under one would
+      // loop. SetupPage brings its own centred shell and its own guard.
+      path: "/setup",
+      Component: SetupPage,
+    },
     {
       path: "/auth",
       Component: AuthLayout,

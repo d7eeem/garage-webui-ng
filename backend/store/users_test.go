@@ -3,7 +3,9 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"golang.org/x/crypto/bcrypt"
@@ -408,5 +410,192 @@ func TestListUsers(t *testing.T) {
 		if users[i].Username != name {
 			t.Errorf("users[%d].Username = %q, want %q (must be ordered by username)", i, users[i].Username, name)
 		}
+	}
+}
+
+// TestCreateFirstAdmin covers the happy path: an empty instance gets exactly
+// one administrator, and the password it was given actually works.
+func TestCreateFirstAdmin(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	u, err := CreateFirstAdmin(ctx, s, "alice", testPassword)
+	if err != nil {
+		t.Fatalf("CreateFirstAdmin: %v", err)
+	}
+	if u.ID == 0 {
+		t.Error("first administrator has ID 0")
+	}
+	if u.Username != "alice" {
+		t.Errorf("username = %q, want %q", u.Username, "alice")
+	}
+	if u.Role != RoleAdmin {
+		t.Errorf("role = %q, want %q — the first account must be able to administer the instance", u.Role, RoleAdmin)
+	}
+	if u.Disabled {
+		t.Error("first administrator is disabled, want enabled")
+	}
+	if u.CreatedAt.IsZero() {
+		t.Error("created_at is zero")
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(testPassword)); err != nil {
+		t.Errorf("stored hash does not verify against the given password: %v", err)
+	}
+
+	n, err := s.CountUsers(ctx)
+	if err != nil {
+		t.Fatalf("CountUsers: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("CountUsers = %d, want 1", n)
+	}
+}
+
+// TestCreateFirstAdminIsOneShot is the security contract behind the
+// unauthenticated POST /setup: once any user exists the wizard is closed, and
+// a second call must neither create a row nor overwrite the existing one.
+func TestCreateFirstAdminIsOneShot(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	if _, err := CreateFirstAdmin(ctx, s, "alice", testPassword); err != nil {
+		t.Fatalf("first CreateFirstAdmin: %v", err)
+	}
+
+	_, err := CreateFirstAdmin(ctx, s, "mallory", "second-attempt-password")
+	if !errors.Is(err, ErrSetupAlreadyDone) {
+		t.Fatalf("second CreateFirstAdmin error = %v, want ErrSetupAlreadyDone", err)
+	}
+
+	n, err := s.CountUsers(ctx)
+	if err != nil {
+		t.Fatalf("CountUsers: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("CountUsers = %d, want 1 — the rejected call must not have inserted anything", n)
+	}
+	if u, err := s.GetUserByUsername(ctx, "mallory"); err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	} else if u != nil {
+		t.Error("the rejected setup attempt created a user")
+	}
+}
+
+// TestCreateFirstAdminAfterCreateUser: the guard counts users, not "users
+// created by the wizard", so an instance seeded any other way (the legacy
+// AUTH_USER_PASS import, for one) is already set up.
+func TestCreateFirstAdminAfterCreateUser(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	if _, err := s.CreateUser(ctx, "viewer", testPassword, RoleViewer); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	if _, err := CreateFirstAdmin(ctx, s, "alice", testPassword); !errors.Is(err, ErrSetupAlreadyDone) {
+		t.Fatalf("error = %v, want ErrSetupAlreadyDone", err)
+	}
+}
+
+// TestCreateFirstAdminValidates: bad input is rejected before anything is
+// written, so a failed wizard submission leaves the instance still setup-able.
+func TestCreateFirstAdminValidates(t *testing.T) {
+	tests := []struct {
+		name     string
+		username string
+		password string
+		wantErr  error
+	}{
+		{"short password", "alice", "short", ErrWeakPassword},
+		{"empty password", "alice", "", ErrWeakPassword},
+		{"whitespace password", "alice", "           ", ErrWeakPassword},
+		{"empty username", "", testPassword, ErrInvalidUsername},
+		{"username with a colon", "alice:bob", testPassword, ErrInvalidUsername},
+		{"username with a space", "alice bob", testPassword, ErrInvalidUsername},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestStore(t)
+			ctx := t.Context()
+
+			if _, err := CreateFirstAdmin(ctx, s, tt.username, tt.password); !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+
+			n, err := s.CountUsers(ctx)
+			if err != nil {
+				t.Fatalf("CountUsers: %v", err)
+			}
+			if n != 0 {
+				t.Errorf("CountUsers = %d, want 0 — a rejected submission must not create anything", n)
+			}
+		})
+	}
+}
+
+// TestCreateFirstAdminIsAtomic is the race a count-then-insert would lose:
+// several callers bootstrap the same empty instance at once and exactly one
+// may win. Without the transaction, two could both read a count of 0.
+func TestCreateFirstAdminIsAtomic(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+
+	const racers = 8
+
+	var (
+		start   sync.WaitGroup
+		done    sync.WaitGroup
+		mu      sync.Mutex
+		created []string
+		other   []error
+	)
+	start.Add(1)
+	done.Add(racers)
+
+	for i := range racers {
+		go func(i int) {
+			defer done.Done()
+			start.Wait()
+
+			u, err := CreateFirstAdmin(ctx, s, fmt.Sprintf("admin%d", i), testPassword)
+
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				created = append(created, u.Username)
+			case errors.Is(err, ErrSetupAlreadyDone):
+				// the expected outcome for every loser
+			default:
+				other = append(other, err)
+			}
+		}(i)
+	}
+
+	start.Done()
+	done.Wait()
+
+	if len(other) > 0 {
+		t.Fatalf("unexpected errors from concurrent setup: %v", other)
+	}
+	if len(created) != 1 {
+		t.Fatalf("%d concurrent calls succeeded (%v), want exactly 1", len(created), created)
+	}
+
+	n, err := s.CountUsers(ctx)
+	if err != nil {
+		t.Fatalf("CountUsers: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("CountUsers = %d, want 1", n)
+	}
+}
+
+// TestCreateFirstAdminWithoutStore: a request that arrives before the database
+// is open must report a failure rather than panic.
+func TestCreateFirstAdminWithoutStore(t *testing.T) {
+	if _, err := CreateFirstAdmin(t.Context(), nil, "alice", testPassword); !errors.Is(err, ErrNoStore) {
+		t.Fatalf("error = %v, want ErrNoStore", err)
 	}
 }

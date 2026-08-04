@@ -159,6 +159,49 @@ func TestAuthMiddlewareAllowsPublicPath(t *testing.T) {
 	}
 }
 
+// TestAuthMiddlewareAllowsSetupPaths: a brand-new deployment has no users, so
+// nobody could authenticate in order to create the first one — the wizard's
+// two endpoints must reach their handlers without a session. Everything else
+// still needs one; the handlers behind /setup carry their own guard against
+// running once an account exists.
+func TestAuthMiddlewareAllowsSetupPaths(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		wantStatus int
+		wantReach  bool
+	}{
+		{"setup status", http.MethodGet, "/setup/status", http.StatusOK, true},
+		{"setup submit", http.MethodPost, "/setup", http.StatusOK, true},
+		{"an ordinary API path still needs a session", http.MethodGet, "/buckets", http.StatusUnauthorized, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessMgr := utils.InitSessionManager()
+
+			reached := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusOK)
+			})
+			handler := sessMgr.LoadAndSave(AuthMiddleware(next))
+
+			req := httptest.NewRequest(tt.method, tt.target, nil)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("%s %s: status = %d, want %d", tt.method, tt.target, w.Code, tt.wantStatus)
+			}
+			if reached != tt.wantReach {
+				t.Errorf("%s %s: handler reached = %v, want %v", tt.method, tt.target, reached, tt.wantReach)
+			}
+		})
+	}
+}
+
 // TestAuthMiddlewareViewerForbidden: an authenticated viewer session still
 // gets 403 on a write, and 200 on a read.
 func TestAuthMiddlewareViewerForbidden(t *testing.T) {
