@@ -5,7 +5,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
 import ThemeProvider from "@/components/containers/theme-provider";
 import ErrorBoundary from "@/components/containers/error-boundary";
+import { installPreloadRecovery } from "@/lib/preload-recovery";
 import "./styles.css";
+
+// Recover once from chunk hashes left stale by an upgrade. Installed at module
+// scope so it is listening before any lazy route is requested.
+installPreloadRecovery();
 
 const App = () => {
   const [queryClient] = useState(() => new QueryClient());
