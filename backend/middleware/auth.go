@@ -8,12 +8,26 @@ import (
 )
 
 // isViewerAllowed is the entire security boundary for the read-only viewer
-// role: fail-closed by construction. Every GET is allowed except the one
-// carve-out that reveals a secret (GetKeyInfo?showSecretKey=true); every
-// non-GET is denied except the two that only affect the caller's own account.
-// Any new write served via GET, or any new secret-revealing GET, must be added
-// here explicitly — do not loosen this to "allow all GET".
+// role: fail-closed by construction. Nothing under /admin/ is reachable at all;
+// otherwise every GET is allowed except the one carve-out that reveals a secret
+// (GetKeyInfo?showSecretKey=true), and every non-GET is denied except the two
+// that only affect the caller's own account. Any new write served via GET, or
+// any new secret-revealing GET, must be added here explicitly — do not loosen
+// this to "allow all GET".
+//
+// This is the outer half of a two-layer guard on the administration API: every
+// /admin/* handler also calls requireAdmin (backend/router/admin_users.go), so
+// a routing mistake alone cannot expose those endpoints. Keep both.
 func isViewerAllowed(r *http.Request) bool {
+	// User administration is admin-only whatever the method, so the check sits
+	// above the per-method rules. Reads are included deliberately: the roster of
+	// accounts, their roles and their sign-in times are not viewer-visible
+	// information, and "every GET is allowed" below would otherwise hand a
+	// viewer the whole user list.
+	if strings.HasPrefix(r.URL.Path, "/admin/") {
+		return false
+	}
+
 	if r.Method == http.MethodGet {
 		// one carve-out: never let a viewer reveal a secret access key
 		if strings.HasPrefix(r.URL.Path, "/v2/GetKeyInfo") &&

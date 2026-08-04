@@ -24,6 +24,17 @@ func HandleApiRouter() *http.ServeMux {
 	router.HandleFunc("GET /setup/status", setup.GetStatus)
 	router.HandleFunc("POST /setup", setup.Create)
 
+	// User administration. On the inner router, so every one of these inherits
+	// AuditLog, CSRF and AuthMiddleware — the middleware denies /admin/ to a
+	// viewer, and each handler calls requireAdmin as a second, independent
+	// check. Registering any of them on mux instead would bypass both.
+	adminUsers := &AdminUsers{}
+	router.HandleFunc("GET /admin/users", adminUsers.List)
+	router.HandleFunc("POST /admin/users", adminUsers.Create)
+	router.HandleFunc("PATCH /admin/users/{id}", adminUsers.Update)
+	router.HandleFunc("DELETE /admin/users/{id}", adminUsers.Delete)
+	router.HandleFunc("POST /admin/users/{id}/reset-password", adminUsers.ResetPassword)
+
 	config := &Config{}
 	router.HandleFunc("GET /config", config.GetAll)
 
