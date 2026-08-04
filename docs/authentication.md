@@ -454,11 +454,82 @@ accordingly.
 
 ## 9. Lockout & recovery
 
-Losing every administrator credential is unrecoverable from inside the app: the
+Losing every administrator credential cannot be fixed *from inside the app*: the
 setup wizard only reopens when there are **zero** users, and the lockout guards
 exist precisely to stop you reaching a state with no working admin.
 
-The only recovery path is to reset the database:
+Work down this list — only step 3 destroys anything.
+
+### Step 1 — another admin still works
+
+Use **Settings → Users → Reset password** on the locked-out account. Nothing
+else in this section applies.
+
+### Step 2 — you have shell access: the recovery CLI
+
+The same binary that serves the UI carries three offline recovery flags. They
+read and write the SQLite database at `DB_PATH` directly, **lose no data**, and
+work even when every password is forgotten.
+
+| Flag | Effect |
+|---|---|
+| `-list-users` | Print every account: username, role, status, last login, created. Never prints a password or a hash. |
+| `-reset-password <username>` | Prompt for a new password and store it on that account. |
+| `-create-admin <username>` | Prompt for a password and create a new **admin**. Works even when accounts already exist — unlike `POST /setup`. |
+
+```bash
+# systemd / bare binary — run as the service user so the new file ownership
+# and the database's own permissions stay correct.
+sudo -u garage-webui DB_PATH=/var/lib/garage-webui-ng/garage-webui-ng.db \
+  /usr/local/bin/garage-webui-ng -list-users
+
+sudo -u garage-webui DB_PATH=/var/lib/garage-webui-ng/garage-webui-ng.db \
+  /usr/local/bin/garage-webui-ng -reset-password admin
+
+# Docker — -it is required, otherwise there is no terminal to prompt on.
+docker run -it --rm -v garage-webui-ng_webui_data:/data \
+  --entrypoint /main ghcr.io/d7eeem/garage-webui-ng:latest -reset-password admin
+
+# ...or against the running container.
+docker compose exec webui /main -list-users
+```
+
+Output looks like this — note that no hash appears anywhere:
+
+```
+USERNAME  ROLE    STATUS  LAST LOGIN            CREATED
+admin     admin   active  2026-08-04 09:12:44Z  2026-06-01 10:02:11Z
+reader    viewer  active  -                     2026-06-01 10:04:02Z
+```
+
+What these commands are, and are not:
+
+- **They are not HTTP endpoints, and never will be.** An unauthenticated
+  password reset reachable over the network is a backdoor. These are process
+  flags that require local read/write access to `DB_PATH` — anyone who can run
+  them could already edit the database file by hand, so they grant no new
+  capability.
+- **The password is never a command-line argument.** It is prompted for with
+  terminal echo disabled and asked twice, so it never reaches your shell
+  history, `ps` output or process accounting. For scripted recovery a single
+  line piped on stdin is accepted instead (`printf '%s\n' "$NEW" | … -reset-password admin`),
+  which skips the confirmation prompt — mind your history settings if you do
+  that.
+- **They enforce the same password policy as the UI** (§2), because they call
+  the same validation code.
+- **Stopping the service is not required.** WAL mode plus a busy timeout makes
+  the concurrent write safe, and credentials are read per-login rather than
+  cached, so a reset takes effect on the next sign-in. Stopping it anyway is
+  the conservative choice and costs nothing.
+- **Existing sessions are not signed out.** Sessions live in memory (§8); a
+  password change — from the CLI or the UI — does not revoke one already
+  established.
+- **They run schema migrations**, like the server does. Pointing them at an old
+  backup copy upgrades that copy.
+
+### Step 3 — last resort: reset the database
+
+Only if you have no shell access to the host at all.
 
 1. **Stop** the container / process.
 2. Remove the database from the volume — the file at `DB_PATH` **and its WAL
@@ -476,9 +547,6 @@ The only recovery path is to reset the database:
 > **This deletes every account**, including viewers, along with their creation
 > and last-login history. Nothing else is affected: buckets, keys and objects
 > live in Garage, not here.
-
-If you still have *one* working admin, you never need this — use
-**Settings → Users → Reset password** on the account that is locked out.
 
 ---
 

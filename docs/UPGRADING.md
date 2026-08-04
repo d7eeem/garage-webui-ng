@@ -352,4 +352,4 @@ Otherwise startup fails fast with `cannot open user database`.
 | Changing `AUTH_USER_PASS` has no effect | Working as designed — it is import-only | Change the password in **Settings → Account**, or reset it from **Settings → Users** |
 | Signed out after every restart | Working as designed — session storage is in memory | Log back in; accounts are unaffected |
 | `403 invalid or missing CSRF token` from a script | The double-submit token is required on all writes except login and setup | Do a `GET` first, keep the `csrf_token` cookie, and echo it in `X-CSRF-Token` |
-| Locked out of every admin account | No admin credential remains | Reset the database — [`authentication.md` §9](authentication.md#9-lockout--recovery). **This deletes all users.** |
+| Locked out of every admin account | No admin credential remains | Recover with no data loss: `garage-webui-ng -reset-password <user>` (or `-create-admin <user>`) on the host, `docker compose exec webui /main -reset-password <user>` in Docker. Deleting the database is the last resort — [`authentication.md` §9](authentication.md#9-lockout--recovery) |

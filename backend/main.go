@@ -27,9 +27,29 @@ func main() {
 	// it issues a local HTTP request and exits 0 (healthy) or 1 (unhealthy), so
 	// the runtime image needs no shell or curl.
 	healthCheck := flag.Bool("health", false, "run a local health probe and exit (0 = healthy)")
+
+	// Offline account recovery. These operate directly on the SQLite file at
+	// DB_PATH and are deliberately not reachable over HTTP — an unauthenticated
+	// password-reset endpoint would be a backdoor. Passwords are prompted for,
+	// never passed as arguments (argv leaks into shell history and `ps`).
+	resetPassword := flag.String("reset-password", "", "set a new password for `username` (prompts; local database access required)")
+	createAdmin := flag.String("create-admin", "", "create a new administrator called `username` (prompts)")
+	listUsers := flag.Bool("list-users", false, "list accounts in the user database and exit")
+
 	flag.Parse()
+
+	// -health stays the first and cheapest branch: it is the container
+	// HEALTHCHECK and runs on every probe interval.
 	if *healthCheck {
 		os.Exit(runHealthCheck())
+	}
+	switch {
+	case *listUsers:
+		os.Exit(runListUsers())
+	case *resetPassword != "":
+		os.Exit(runResetPassword(*resetPassword))
+	case *createAdmin != "":
+		os.Exit(runCreateAdmin(*createAdmin))
 	}
 
 	// Initialize app
