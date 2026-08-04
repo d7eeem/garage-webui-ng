@@ -60,6 +60,11 @@ var (
 	ErrInvalidRole     = errors.New("invalid role")
 	ErrWeakPassword    = errors.New("password is not acceptable")
 	ErrInvalidUsername = errors.New("invalid username")
+
+	// ErrSetupAlreadyDone is returned when the instance already has at least
+	// one user. It is the guard that makes the unauthenticated /setup endpoint
+	// safe: once it can be returned, the wizard is permanently closed.
+	ErrSetupAlreadyDone = errors.New("setup has already been completed")
 )
 
 // ValidateUsername enforces the login-name charset and length.
@@ -254,6 +259,90 @@ func (s *Store) insertUser(ctx context.Context, username, passwordHash, role str
 	}
 	if u == nil {
 		return nil, fmt.Errorf("user %q disappeared right after insert: %w", username, ErrUserNotFound)
+	}
+	return u, nil
+}
+
+// CreateFirstAdmin creates the initial administrator, but only while the users
+// table is empty. It backs POST /setup, the one endpoint in this app that
+// writes without an authenticated session, so the emptiness check and the
+// insert must be indivisible: two concurrent setup requests may not both
+// succeed, and no request may succeed after the first user exists.
+//
+// Atomicity comes from running the count and the insert on one *sql.Tx over a
+// pool limited to a single connection (Open sets SetMaxOpenConns(1)). The
+// second caller cannot even begin its transaction until the first has
+// committed and released that connection, so it always sees the new row and
+// gets ErrSetupAlreadyDone. Raising SetMaxOpenConns without switching this
+// transaction to BEGIN IMMEDIATE would reintroduce the race.
+//
+// It is a function rather than a method purely to keep the callers' intent
+// obvious at the call site: store.CreateFirstAdmin reads as a one-time
+// bootstrap, not as ordinary user administration.
+func CreateFirstAdmin(ctx context.Context, s *Store, username, password string) (*User, error) {
+	if s == nil {
+		return nil, ErrNoStore
+	}
+
+	// Validate before touching the database: a rejected password must not cost
+	// a transaction, and the caller needs the specific validation error.
+	username = strings.TrimSpace(username)
+	if err := ValidateUsername(username); err != nil {
+		return nil, err
+	}
+	if err := ValidatePassword(password); err != nil {
+		return nil, err
+	}
+
+	// Hash outside the transaction. bcrypt at cost 10 takes ~100ms and the
+	// store has exactly one connection, so hashing inside would block every
+	// other query for that whole time.
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
+	if err != nil {
+		return nil, fmt.Errorf("cannot hash password: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("cannot begin setup transaction: %w", err)
+	}
+	// No-op once Commit has run; the guard against leaving the sole connection
+	// held open on every early return below.
+	defer func() { _ = tx.Rollback() }()
+
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n); err != nil {
+		return nil, fmt.Errorf("cannot count users: %w", err)
+	}
+	if n > 0 {
+		return nil, ErrSetupAlreadyDone
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO users (username, password_hash, role, disabled) VALUES (?, ?, ?, 0)`,
+		username, string(hash), RoleAdmin)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%q: %w", username, ErrUsernameTaken)
+		}
+		return nil, fmt.Errorf("cannot create first administrator %q: %w", username, err)
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("cannot read id of first administrator %q: %w", username, err)
+	}
+
+	// Read the row back on the transaction, not on s.db: the pool has a single
+	// connection and this transaction is holding it, so a query through the
+	// store would deadlock until the context expired.
+	u, err := scanUser(tx.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id = ?`, id))
+	if err != nil {
+		return nil, fmt.Errorf("cannot read back first administrator %q: %w", username, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("cannot commit first administrator %q: %w", username, err)
 	}
 	return u, nil
 }

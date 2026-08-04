@@ -15,6 +15,14 @@ func HandleApiRouter() *http.ServeMux {
 	router.HandleFunc("POST /auth/logout", auth.Logout)
 	router.HandleFunc("GET /auth/status", auth.GetStatus)
 
+	// First-run wizard. Registered on the inner router — not on mux — so both
+	// routes still pass through AuditLog and AuthMiddleware; the middleware's
+	// isPublicPath allowlist is what lets them through without a session, and
+	// the handlers carry their own guard against running twice.
+	setup := &Setup{}
+	router.HandleFunc("GET /setup/status", setup.GetStatus)
+	router.HandleFunc("POST /setup", setup.Create)
+
 	config := &Config{}
 	router.HandleFunc("GET /config", config.GetAll)
 

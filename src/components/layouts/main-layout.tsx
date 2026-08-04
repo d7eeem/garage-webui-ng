@@ -23,6 +23,12 @@ const MainLayout = () => {
     return null;
   }
 
+  // Before the login check: on an instance with no users there is nobody to
+  // log in as, so a login form would be a dead end.
+  if (auth.needsSetup) {
+    return <Navigate to="/setup" replace />;
+  }
+
   if (!auth.isAuthenticated) {
     return <Navigate to="/auth/login" />;
   }
