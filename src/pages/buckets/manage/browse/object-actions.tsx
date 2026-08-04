@@ -1,6 +1,6 @@
-import { Dropdown } from "react-daisyui";
 import { Object } from "./types";
 import Button from "@/components/ui/button";
+import Menu, { MenuItem } from "@/components/ui/menu";
 import { DownloadIcon, EllipsisVertical, Share2, Trash } from "lucide-react";
 import { useDeleteObject } from "./hooks";
 import { useBucketContext } from "../context";
@@ -14,10 +14,9 @@ import { useAuth } from "@/hooks/useAuth";
 type Props = {
   prefix?: string;
   object: Pick<Object, "objectKey" | "url">;
-  end?: boolean;
 };
 
-const ObjectActions = ({ prefix = "", object, end }: Props) => {
+const ObjectActions = ({ prefix = "", object }: Props) => {
   const { canWrite } = useAuth();
   const { bucketName } = useBucketContext();
   const queryClient = useQueryClient();
@@ -58,29 +57,29 @@ const ObjectActions = ({ prefix = "", object, end }: Props) => {
           <Button icon={DownloadIcon} color="ghost" onClick={onDownload} />
         )}
 
-        <Dropdown end vertical={end ? "top" : "bottom"}>
-          <Dropdown.Toggle button={false}>
-            <Button icon={EllipsisVertical} color="ghost" />
-          </Dropdown.Toggle>
-
-          <Dropdown.Menu className="gap-y-1">
-            <Dropdown.Item
-              onClick={() =>
-                shareDialog.open({ key: object.objectKey, prefix })
-              }
+        <Menu
+          trigger={<EllipsisVertical size={18} />}
+          triggerLabel="Object actions"
+          className="gap-y-1"
+        >
+          <MenuItem
+            icon={Share2}
+            iconSize={24}
+            onClick={() => shareDialog.open({ key: object.objectKey, prefix })}
+          >
+            Share
+          </MenuItem>
+          {canWrite && (
+            <MenuItem
+              icon={Trash}
+              iconSize={24}
+              className="text-error bg-error/10"
+              onClick={onDelete}
             >
-              <Share2 /> Share
-            </Dropdown.Item>
-            {canWrite && (
-              <Dropdown.Item
-                className="text-error bg-error/10"
-                onClick={onDelete}
-              >
-                <Trash /> Delete
-              </Dropdown.Item>
-            )}
-          </Dropdown.Menu>
-        </Dropdown>
+              Delete
+            </MenuItem>
+          )}
+        </Menu>
       </span>
     </td>
   );

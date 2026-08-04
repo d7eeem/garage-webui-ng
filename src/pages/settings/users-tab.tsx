@@ -1,8 +1,9 @@
 import Button from "@/components/ui/button";
 import { InputField } from "@/components/ui/input";
+import Menu, { MenuItem } from "@/components/ui/menu";
 import { useAuth } from "@/hooks/useAuth";
 import { useDisclosure } from "@/hooks/useDisclosure";
-import { cn, dayjs, handleError } from "@/lib/utils";
+import { dayjs, handleError } from "@/lib/utils";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
   EllipsisVertical,
@@ -14,8 +15,8 @@ import {
   UserCheck,
   UserX,
 } from "lucide-react";
-import { ReactNode, useEffect, useMemo } from "react";
-import { Badge, Card, Dropdown, Modal, Table } from "react-daisyui";
+import { useEffect, useMemo } from "react";
+import { Badge, Card, Modal, Table } from "react-daisyui";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import {
@@ -43,42 +44,15 @@ const emptyCreateForm: CreateUserSchema = {
 const formatDate = (value?: string | null) =>
   value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "—";
 
-type ActionItemProps = {
-  /** Why the action is unavailable. Undefined means it is allowed. */
-  blockedBecause?: string;
-  className?: string;
-  onClick: () => void;
-  children: ReactNode;
-};
-
 /**
- * A row in the per-user action menu that can be greyed out.
- *
- * react-daisyui's `Dropdown.Item` renders an anchor and has no `disabled`
- * prop, so the state is expressed with daisyUI's `disabled` menu class *and* a
- * guard on the handler — styling alone would still leave the row clickable by
- * keyboard. The reason becomes the tooltip, so a greyed-out Delete explains
- * itself instead of looking broken.
+ * Turns "why this action is unavailable" into `MenuItem`'s disabled props.
+ * `undefined` means the action is allowed. The reason becomes the tooltip, so a
+ * greyed-out Delete explains itself instead of looking broken.
  */
-const ActionItem = ({
-  blockedBecause,
-  className,
-  onClick,
-  children,
-}: ActionItemProps) => (
-  <Dropdown.Item
-    className={cn(blockedBecause && "disabled opacity-50", className)}
-    title={blockedBecause}
-    aria-disabled={blockedBecause ? true : undefined}
-    onClick={(e) => {
-      e.preventDefault();
-      if (blockedBecause) return;
-      onClick();
-    }}
-  >
-    {children}
-  </Dropdown.Item>
-);
+const blocked = (reason?: string) => ({
+  disabled: !!reason,
+  disabledReason: reason,
+});
 
 /**
  * Settings → Users: create, rename, re-role, disable and delete accounts.
@@ -282,78 +256,68 @@ const UsersTab = () => {
                   </span>
 
                   <span>
-                    <Dropdown end>
-                      <Dropdown.Toggle button={false}>
-                        <Button icon={EllipsisVertical} color="ghost" />
-                      </Dropdown.Toggle>
+                    <Menu
+                      trigger={<EllipsisVertical size={18} />}
+                      triggerLabel={`Actions for ${user.username}`}
+                      className="w-56"
+                    >
+                      {/* Resetting a password takes nobody's administration
+                          away, so it is never blocked. */}
+                      <MenuItem
+                        icon={KeyRound}
+                        onClick={() => resetDialog.onOpen(user)}
+                      >
+                        Reset password
+                      </MenuItem>
 
-                      <Dropdown.Menu className="z-10 w-56">
-                        {/* Resetting a password takes nobody's administration
-                            away, so it is never blocked. */}
-                        <ActionItem onClick={() => resetDialog.onOpen(user)}>
-                          <KeyRound size={16} /> Reset password
-                        </ActionItem>
+                      <MenuItem
+                        // Promoting a viewer only ever adds an administrator;
+                        // only the demotion needs guarding.
+                        {...blocked(
+                          user.role === "admin"
+                            ? blockReason(user, "demote")
+                            : undefined
+                        )}
+                        icon={user.role === "admin" ? ShieldOff : ShieldCheck}
+                        onClick={() =>
+                          updateUser.mutate({
+                            id: user.id,
+                            role: user.role === "admin" ? "viewer" : "admin",
+                          })
+                        }
+                      >
+                        {user.role === "admin"
+                          ? "Make viewer"
+                          : "Make administrator"}
+                      </MenuItem>
 
-                        <ActionItem
-                          // Promoting a viewer only ever adds an administrator;
-                          // only the demotion needs guarding.
-                          blockedBecause={
-                            user.role === "admin"
-                              ? blockReason(user, "demote")
-                              : undefined
-                          }
-                          onClick={() =>
-                            updateUser.mutate({
-                              id: user.id,
-                              role: user.role === "admin" ? "viewer" : "admin",
-                            })
-                          }
-                        >
-                          {user.role === "admin" ? (
-                            <>
-                              <ShieldOff size={16} /> Make viewer
-                            </>
-                          ) : (
-                            <>
-                              <ShieldCheck size={16} /> Make administrator
-                            </>
-                          )}
-                        </ActionItem>
+                      <MenuItem
+                        // Re-enabling is always safe; only disabling is not.
+                        {...blocked(
+                          user.disabled
+                            ? undefined
+                            : blockReason(user, "disable")
+                        )}
+                        icon={user.disabled ? UserCheck : UserX}
+                        onClick={() =>
+                          updateUser.mutate({
+                            id: user.id,
+                            disabled: !user.disabled,
+                          })
+                        }
+                      >
+                        {user.disabled ? "Enable" : "Disable"}
+                      </MenuItem>
 
-                        <ActionItem
-                          // Re-enabling is always safe; only disabling is not.
-                          blockedBecause={
-                            user.disabled
-                              ? undefined
-                              : blockReason(user, "disable")
-                          }
-                          onClick={() =>
-                            updateUser.mutate({
-                              id: user.id,
-                              disabled: !user.disabled,
-                            })
-                          }
-                        >
-                          {user.disabled ? (
-                            <>
-                              <UserCheck size={16} /> Enable
-                            </>
-                          ) : (
-                            <>
-                              <UserX size={16} /> Disable
-                            </>
-                          )}
-                        </ActionItem>
-
-                        <ActionItem
-                          className="bg-error/10 text-error"
-                          blockedBecause={blockReason(user, "delete")}
-                          onClick={() => onDelete(user)}
-                        >
-                          <Trash size={16} /> Delete
-                        </ActionItem>
-                      </Dropdown.Menu>
-                    </Dropdown>
+                      <MenuItem
+                        icon={Trash}
+                        className="bg-error/10 text-error"
+                        {...blocked(blockReason(user, "delete"))}
+                        onClick={() => onDelete(user)}
+                      >
+                        Delete
+                      </MenuItem>
+                    </Menu>
                   </span>
                 </Table.Row>
               ))}

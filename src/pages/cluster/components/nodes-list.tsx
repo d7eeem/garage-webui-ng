@@ -1,5 +1,6 @@
-import { Alert, Badge, Button, Dropdown, Input, Table } from "react-daisyui";
+import { Alert, Badge, Button, Input, Table } from "react-daisyui";
 import { Node } from "../types";
+import Menu, { MenuItem } from "@/components/ui/menu";
 import { cn, handleError, readableBytes } from "@/lib/utils";
 import {
   Check,
@@ -269,31 +270,29 @@ const NodesList = ({ nodes }: NodeListProps) => {
                 </Badge>
 
                 {canWrite ? (
-                  <Dropdown
-                    end
-                    vertical={
-                      idx > 2 && idx >= items.length - 2 ? "top" : "bottom"
-                    }
+                  <Menu
+                    trigger={<EllipsisVertical />}
+                    triggerLabel="Node actions"
+                    className="min-w-40 gap-y-1"
                   >
-                    <Dropdown.Toggle button={false}>
-                      <Button shape="circle" color="ghost">
-                        <EllipsisVertical />
-                      </Button>
-                    </Dropdown.Toggle>
-                    <Dropdown.Menu className="min-w-40 gap-y-1">
-                      <Dropdown.Item onClick={() => onAssign(item)}>
-                        <RouteIcon size={20} /> Assign
-                      </Dropdown.Item>
-                      {item.role != null && (
-                        <Dropdown.Item
-                          className="text-error bg-error/10"
-                          onClick={() => onUnassign(item.id)}
-                        >
-                          <Trash2 size={20} /> Remove
-                        </Dropdown.Item>
-                      )}
-                    </Dropdown.Menu>
-                  </Dropdown>
+                    <MenuItem
+                      icon={RouteIcon}
+                      iconSize={20}
+                      onClick={() => onAssign(item)}
+                    >
+                      Assign
+                    </MenuItem>
+                    {item.role != null && (
+                      <MenuItem
+                        icon={Trash2}
+                        iconSize={20}
+                        className="text-error bg-error/10"
+                        onClick={() => onUnassign(item.id)}
+                      >
+                        Remove
+                      </MenuItem>
+                    )}
+                  </Menu>
                 ) : (
                   <></>
                 )}

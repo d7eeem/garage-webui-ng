@@ -144,7 +144,7 @@ const ObjectList = ({
             </tr>
           ))}
 
-          {objects.map((object, idx) => {
+          {objects.map((object) => {
             const extIdx = object.objectKey.lastIndexOf(".");
             const filename =
               extIdx >= 0
@@ -182,11 +182,7 @@ const ObjectList = ({
                 <td className="whitespace-nowrap">
                   {dayjs(object.lastModified).fromNow()}
                 </td>
-                <ObjectActions
-                  prefix={currentPrefix}
-                  object={object}
-                  end={idx >= objects.length - 2 && objects.length > 5}
-                />
+                <ObjectActions prefix={currentPrefix} object={object} />
               </tr>
             );
           })}

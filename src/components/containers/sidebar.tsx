@@ -8,9 +8,10 @@ import {
   Palette,
   Settings,
 } from "lucide-react";
-import { Dropdown, Menu } from "react-daisyui";
+import { Menu as NavMenu } from "react-daisyui";
 import { Link, useLocation } from "react-router-dom";
 import Button from "../ui/button";
+import Menu, { MenuItem } from "../ui/menu";
 import { themes } from "@/app/themes";
 import appStore from "@/stores/app-store";
 import garageLogo from "@/assets/garage-logo.svg";
@@ -43,13 +44,13 @@ const Sidebar = () => {
         <p className="text-sm font-medium text-center">WebUI-NG</p>
       </div>
 
-      <Menu className="gap-y-1 flex-1 overflow-y-auto">
+      <NavMenu className="gap-y-1 flex-1 overflow-y-auto">
         {pages.map((page) => {
           const isActive = page.exact
             ? pathname === page.path
             : pathname.startsWith(page.path);
           return (
-            <Menu.Item key={page.path}>
+            <NavMenu.Item key={page.path}>
               <Link
                 to={page.path}
                 className={cn(
@@ -61,30 +62,30 @@ const Sidebar = () => {
                 <page.icon size={18} />
                 <p>{page.title}</p>
               </Link>
-            </Menu.Item>
+            </NavMenu.Item>
           );
         })}
-      </Menu>
+      </NavMenu>
 
       <div className="py-2 px-4 flex items-center gap-2">
-        <Dropdown vertical="top">
-          <Dropdown.Toggle button={false}>
-            <Button icon={Palette} color="ghost">
+        <Menu
+          placement="top-start"
+          triggerLabel="Theme"
+          triggerClassName={cn("btn btn-ghost", auth.isEnabled && "btn-circle")}
+          trigger={
+            <>
+              <Palette size={18} className={!auth.isEnabled ? "-ml-1" : ""} />
               {!auth.isEnabled ? "Theme" : null}
-            </Button>
-          </Dropdown.Toggle>
-
-          <Dropdown.Menu className="max-h-[500px] overflow-y-auto">
-            {themes.map((theme) => (
-              <Dropdown.Item
-                key={theme}
-                onClick={() => appStore.setTheme(theme)}
-              >
-                {ucfirst(theme)}
-              </Dropdown.Item>
-            ))}
-          </Dropdown.Menu>
-        </Dropdown>
+            </>
+          }
+          className="max-h-[500px] overflow-y-auto"
+        >
+          {themes.map((theme) => (
+            <MenuItem key={theme} onClick={() => appStore.setTheme(theme)}>
+              {ucfirst(theme)}
+            </MenuItem>
+          ))}
+        </Menu>
 
         {auth.isEnabled ? (
           <div className="flex-1 flex flex-col items-stretch min-w-0">
