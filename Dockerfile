@@ -48,7 +48,7 @@ COPY --from=frontend /app/dist ./ui/dist
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux \
-    go build -tags=prod -trimpath -ldflags="-s -w" -o /main main.go
+    go build -tags=prod -trimpath -ldflags="-s -w" -o /main .
 
 # Staging directory for the runtime volume mount point. It exists only to be
 # copied (with the right ownership) into the runtime stage below.

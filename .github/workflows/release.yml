@@ -48,7 +48,7 @@ jobs:
           rm -rf ui/dist && cp -r ../dist ui/dist
           CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} \
             go build -tags=prod -trimpath -ldflags="-s -w" \
-            -o "garage-webui-ng-linux-${{ matrix.goarch }}" main.go
+            -o "garage-webui-ng-linux-${{ matrix.goarch }}" .
 
       - name: Attach binary to the release
         uses: softprops/action-gh-release@v2
