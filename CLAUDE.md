@@ -60,6 +60,18 @@ Backend (`cd backend`):
 - **Never let a password or hash leave the process.** `store.User.PasswordHash` carries `json:"-"` — that tag is the single guarantee, and the store/router tests assert on **raw response bodies** that no bcrypt prefix ever appears. Handlers that accept a password replace the JSON decoder's error with a flat `"invalid request body"`, because the decoder can quote the body it failed on. Nothing logs a submitted credential.
 - **Docs are part of an auth endpoint's definition of done.** Adding or changing an `/auth/*` or `/admin/*` route means updating the API table in [`docs/authentication.md`](docs/authentication.md); the README links there instead of duplicating it.
 
-## `plans/` directory (untracked)
+## `plans/` directory (tracked)
 
-Holds an `/improve` advisor pass: numbered implementation plans (shipped in release 1.2.0), design/spike docs under `plans/design/`, and `plans/README.md` — an index of what shipped, findings considered-and-rejected, a dependency audit, and known gaps (including the lint backlog above). Useful background on *why* the code is shaped as it is; not part of the built artifact.
+Living backlog of implementation plans maintained via the `/improve` skill. Structure:
+- `README.md` — index with execution order, status (DONE/BLOCKED/TODO), dependencies, considered-and-rejected findings, and maintenance notes
+- `001-*.md` through `033-*.md` — numbered plans, one per feature/bug/refactor, each self-contained for hand-off execution
+- `design/` — spike/design docs for exploratory findings (e.g. presigned shares, operator roles)
+
+**Workflow:** advisor skill audits findings → writes self-contained plans → dispatcher runs `/improve execute <plan>` (each plan gets a cheaper executor in an isolated git worktree) → tech-lead review (re-verify gates, check scope/quality, audit new tests) → merge.
+
+**Current release (3.1.0, commit f9cd2c6):** Plans 001–032 completed and shipped. Plan 033 (header account redesign) written, unexecuted. Plan 031 (download-selected ZIP) executed, in review (one fix needed for pre-flight validation). Plan 029 (offline admin-recovery CLI, -reset-password / -create-admin / -list-users) shipped.
+
+**Lessons from recent runs:**
+- Session-touching handlers must be tested through `sessMgr.LoadAndSave(http.HandlerFunc(...))`, not called directly — `utils.Session.Get` panics without it.
+- jsdom has no layout engine (0×0 rects everywhere) — tests of `@floating-ui` components need layout stubs (`Element.prototype.getBoundingClientRect`, `clientWidth/clientHeight`); see `menu.test.tsx` for the pattern.
+- Plan assertions should target the **diff**, not repo-wide greps — a pre-existing endpoint matching a pattern the plan forbids is not a violation if it predates the plan.

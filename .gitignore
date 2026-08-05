@@ -30,3 +30,8 @@ docker-compose.*.yml
 data/
 meta/
 garage.toml
+
+# Claude Code local state. `.claude/worktrees/` holds one full checkout of this
+# repo per dispatched agent — currently ~1.4 GB — so this must stay ignored or
+# a `git add -A` will try to commit the repo into itself.
+.claude/
