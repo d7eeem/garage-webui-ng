@@ -273,7 +273,7 @@ const NodesList = ({ nodes }: NodeListProps) => {
                   <Menu
                     trigger={<EllipsisVertical />}
                     triggerLabel="Node actions"
-                    className="min-w-40 gap-y-1"
+                    className="gap-y-1"
                   >
                     <MenuItem
                       icon={RouteIcon}

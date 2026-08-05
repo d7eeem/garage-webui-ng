@@ -6,6 +6,7 @@ import {
   FloatingFocusManager,
   FloatingList,
   FloatingPortal,
+  hide,
   offset,
   shift,
   size,
@@ -107,7 +108,7 @@ const Menu = ({
   const elementsRef = useRef<Array<HTMLElement | null>>([]);
   const labelsRef = useRef<Array<string | null>>([]);
 
-  const { refs, floatingStyles, context } = useFloating({
+  const { refs, floatingStyles, context, middlewareData } = useFloating({
     open: isOpen,
     onOpenChange: setIsOpen,
     placement,
@@ -118,12 +119,25 @@ const Menu = ({
       shift({ padding: 8 }),
       size({
         padding: 8,
-        apply({ availableHeight, rects, elements }) {
+        apply({ availableWidth, availableHeight, rects, elements }) {
           const surface = elements.floating;
 
-          if (matchTriggerWidth) {
-            surface.style.width = `${rects.reference.width}px`;
-          }
+          // Width rules, in order:
+          //  • never narrower than the trigger the user clicked,
+          //  • otherwise intrinsic — `max-content` grows the surface to its
+          //    longest item instead of truncating it against a fixed class,
+          //  • never wider than the space the viewport actually leaves.
+          // `matchTriggerWidth` stays an opt-in *exact* match for select-style
+          // callers; the default is intrinsic.
+          Object.assign(surface.style, {
+            minWidth: matchTriggerWidth
+              ? `${rects.reference.width}px`
+              : `${Math.min(rects.reference.width, availableWidth)}px`,
+            width: matchTriggerWidth
+              ? `${rects.reference.width}px`
+              : "max-content",
+            maxWidth: `${availableWidth}px`,
+          });
 
           // Clamp to the space actually available, but never *raise* a cap a
           // caller set with a class (the theme picker's `max-h-[500px]`), since
@@ -144,8 +158,19 @@ const Menu = ({
           )}px`;
         },
       }),
+      // Last on purpose: hide() reports on the *final* computed position, so it
+      // has to run after everything that can still move the surface. When the
+      // trigger scrolls out of its container the portal surface would otherwise
+      // keep floating over unrelated content — portalling it removed the
+      // clipping ancestor that used to hide it, so we hide it explicitly.
+      hide({ padding: 8 }),
     ],
   });
+
+  // `visibility`, never `display: none`: the surface must keep its box so
+  // `autoUpdate` keeps measuring it and focus management keeps working while
+  // it is out of view.
+  const isReferenceHidden = middlewareData.hide?.referenceHidden === true;
 
   const click = useClick(context);
   const dismiss = useDismiss(context);
@@ -204,7 +229,11 @@ const Menu = ({
           <FloatingFocusManager context={context} modal={false}>
             <div
               ref={refs.setFloating}
-              style={{ ...floatingStyles, zIndex: Z_LAYERS.dropdown }}
+              style={{
+                ...floatingStyles,
+                zIndex: Z_LAYERS.dropdown,
+                visibility: isReferenceHidden ? "hidden" : "visible",
+              }}
               {...getFloatingProps()}
             >
               {/* role="none" on the list wrappers keeps the menuitems direct
