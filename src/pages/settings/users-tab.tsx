@@ -259,7 +259,6 @@ const UsersTab = () => {
                     <Menu
                       trigger={<EllipsisVertical size={18} />}
                       triggerLabel={`Actions for ${user.username}`}
-                      className="w-56"
                     >
                       {/* Resetting a password takes nobody's administration
                           away, so it is never blocked. */}
