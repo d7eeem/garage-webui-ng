@@ -13,6 +13,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { InputField } from "@/components/ui/input";
 import { useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import uploadQueue from "./upload-queue";
 
 type Props = {
   prefix: string;
@@ -21,15 +22,6 @@ type Props = {
 const Actions = ({ prefix }: Props) => {
   const { canWrite } = useAuth();
   const { bucketName } = useBucketContext();
-  const queryClient = useQueryClient();
-
-  const putObject = usePutObject(bucketName, {
-    onSuccess: () => {
-      toast.success("File uploaded!");
-      queryClient.invalidateQueries({ queryKey: ["browse", bucketName] });
-    },
-    onError: handleError,
-  });
 
   const onUploadFile = () => {
     const input = document.createElement("input");
@@ -47,10 +39,7 @@ const Actions = ({ prefix }: Props) => {
         return;
       }
 
-      for (const file of files) {
-        const key = prefix + file.name;
-        putObject.mutate({ key, file });
-      }
+      uploadQueue.enqueue(bucketName, prefix, Array.from(files));
     };
 
     input.click();
