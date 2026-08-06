@@ -76,6 +76,19 @@ export const useBulkDelete = (
   });
 };
 
+export const useDownloadToken = (
+  bucket: string,
+  options?: UseMutationOptions<{ token: string }, Error, string[]>
+) => {
+  return useMutation({
+    mutationFn: (keys) =>
+      api.post<{ token: string }>("/browse/download-token", {
+        body: { bucket, keys },
+      }),
+    ...options,
+  });
+};
+
 export const useShareLink = (bucket: string) => {
   return useMutation({
     mutationFn: (v: { key: string; expires: number }) =>
