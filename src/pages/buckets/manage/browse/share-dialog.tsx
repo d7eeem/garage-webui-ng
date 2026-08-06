@@ -48,7 +48,7 @@ const ShareDialog = () => {
     <Modal ref={dialogRef} open={isOpen} backdrop>
       <Modal.Header className="truncate">Share {data?.key || ""}</Modal.Header>
       <Modal.Body>
-        {config?.sharing && (
+        {config?.sharing ? (
           <div className="flex flex-col gap-2 mb-4 pb-4 border-b border-base-content/10">
             <p className="label label-text py-0">Private link (expires)</p>
 
@@ -88,28 +88,52 @@ const ShareDialog = () => {
               </div>
             )}
           </div>
+        ) : (
+          <Alert className="mb-4 items-start text-sm">
+            <FileWarningIcon className="mt-1 shrink-0" />
+            <span>
+              Expiring private links are not enabled. Set{" "}
+              <code>S3_PUBLIC_ENDPOINT_URL</code> to the S3 API address your
+              link recipients can reach (for example{" "}
+              <code>https://s3.example.com</code>) and restart the app.
+            </span>
+          </Alert>
         )}
 
         {!bucket.websiteAccess && (
           <Alert className="mb-4 items-start text-sm">
-            <FileWarningIcon className="mt-1" />
-            Sharing is only available for buckets with enabled website access.
+            <FileWarningIcon className="mt-1 shrink-0" />
+            <span>
+              This bucket has no website access, so it has no public URL.
+              {config?.sharing ? " Private links above still work." : ""}
+            </span>
           </Alert>
         )}
         {websiteUrl && (
-          <div className="relative mt-2">
-            <Input
-              value={websiteUrl}
-              className="w-full pr-12"
-              onFocus={(e) => e.target.select()}
-              readOnly
-            />
-            <Button
-              icon={Copy}
-              onClick={() => copyToClipboard(websiteUrl)}
-              className="absolute top-0 right-0"
-              color="ghost"
-            />
+          <div className="mt-2">
+            <p className="label label-text py-0">Public link (no expiry)</p>
+            <div className="relative mt-2">
+              <Input
+                value={websiteUrl}
+                className="w-full pr-12"
+                onFocus={(e) => e.target.select()}
+                readOnly
+              />
+              <Button
+                icon={Copy}
+                onClick={() => copyToClipboard(websiteUrl)}
+                className="absolute top-0 right-0"
+                color="ghost"
+              />
+            </div>
+            {websiteUrl.startsWith("http://") &&
+              window.location.protocol === "https:" && (
+                <p className="text-xs text-warning mt-1">
+                  This link is plain HTTP while the console is served over
+                  HTTPS. Set <code>S3_WEB_PUBLIC_URL</code> to your website
+                  endpoint's public HTTPS address.
+                </p>
+              )}
           </div>
         )}
       </Modal.Body>

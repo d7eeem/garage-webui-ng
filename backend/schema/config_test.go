@@ -76,3 +76,22 @@ func TestNewConfigResponseKeepsWebFields(t *testing.T) {
 		t.Errorf("expected s3_api.root_domain %q, got %q", "s3.example.com", resp.S3API.RootDomain)
 	}
 }
+
+func TestNewConfigResponseLeavesPublicURLEmpty(t *testing.T) {
+	cfg := Config{
+		S3Web: S3Web{
+			BindAddr:   "0.0.0.0:3902",
+			Index:      "index.html",
+			RootDomain: "web.example.com",
+		},
+	}
+
+	resp := NewConfigResponse(cfg)
+
+	// PublicURL is env-derived, not a garage.toml field, so NewConfigResponse
+	// must never populate it — the handler in backend/router/config.go is
+	// responsible for that.
+	if resp.S3Web.PublicURL != "" {
+		t.Errorf("expected s3_web.public_url to be empty, got %q", resp.S3Web.PublicURL)
+	}
+}

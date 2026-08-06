@@ -97,6 +97,22 @@ func (g *garage) IsSharingEnabled() bool {
 	return os.Getenv("S3_PUBLIC_ENDPOINT_URL") != ""
 }
 
+// GetWebPublicURL returns the operator-declared public base URL for static
+// website hosting, or "" when unset.
+//
+// The app cannot derive this: garage.toml describes Garage's own web listener
+// (plain HTTP on bind_addr's port), not whatever reverse proxy fronts it. A
+// deployment serving this UI over HTTPS almost certainly serves its buckets
+// over HTTPS too, and an http:// link from an https:// page is mixed content.
+//
+// Contains "{bucket}" ⇒ vhost style, the token is substituted. Otherwise ⇒
+// path style, the bucket name becomes the first path segment. The frontend
+// (src/lib/website.ts) performs the substitution; this only transports the
+// value.
+func (g *garage) GetWebPublicURL() string {
+	return strings.TrimRight(os.Getenv("S3_WEB_PUBLIC_URL"), "/")
+}
+
 func (g *garage) GetS3Region() string {
 	endpoint := os.Getenv("S3_REGION")
 	if len(endpoint) > 0 {

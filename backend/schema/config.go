@@ -45,6 +45,10 @@ type S3WebResponse struct {
 	BindAddr   string `json:"bind_addr"`
 	RootDomain string `json:"root_domain"`
 	Index      string `json:"index"`
+	// PublicURL is env-derived (S3_WEB_PUBLIC_URL), not read from garage.toml,
+	// so NewConfigResponse leaves it empty — the handler in
+	// backend/router/config.go fills it, the same way it fills Sharing.
+	PublicURL string `json:"public_url"`
 }
 
 // NewConfigResponse projects a parsed Config onto the browser-safe subset.
