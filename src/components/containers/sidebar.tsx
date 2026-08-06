@@ -6,7 +6,6 @@ import {
   LayoutDashboard,
   LogOut,
   Palette,
-  Settings,
 } from "lucide-react";
 import { Menu as NavMenu } from "react-daisyui";
 import { Link, useLocation } from "react-router-dom";
@@ -26,7 +25,6 @@ const pages = [
   { icon: HardDrive, title: "Cluster", path: "/cluster" },
   { icon: ArchiveIcon, title: "Buckets", path: "/buckets" },
   { icon: KeySquare, title: "Keys", path: "/keys" },
-  { icon: Settings, title: "Settings", path: "/settings" },
 ];
 
 const Sidebar = () => {
@@ -87,16 +85,7 @@ const Sidebar = () => {
           ))}
         </Menu>
 
-        {auth.isEnabled ? (
-          <div className="flex-1 flex flex-col items-stretch min-w-0">
-            {auth.username ? (
-              <p className="text-xs text-base-content/60 truncate px-1">
-                Signed in as {auth.username}
-              </p>
-            ) : null}
-            <LogoutButton />
-          </div>
-        ) : null}
+        {auth.isEnabled ? <LogoutButton /> : null}
       </div>
     </aside>
   );
