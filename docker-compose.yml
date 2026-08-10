@@ -42,6 +42,10 @@ services:
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://garage:3900}
       # Optional — see .env.example. Empty values are simply ignored.
       S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-}
+      # Public base URL for website-hosted (public read) buckets — must route
+      # to Garage's WEB port (3902 above), not the S3 API port.
+      S3_WEB_PUBLIC_URL: ${S3_WEB_PUBLIC_URL:-}
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-}
       AUTH_USER_PASS: ${AUTH_USER_PASS:-}
       AUTH_VIEWER_USER_PASS: ${AUTH_VIEWER_USER_PASS:-}
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-}
