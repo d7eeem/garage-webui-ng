@@ -38,6 +38,12 @@ func HandleApiRouter() *http.ServeMux {
 	config := &Config{}
 	router.HandleFunc("GET /config", config.GetAll)
 
+	// Registered on the inner router, not mux, so it inherits AuthMiddleware —
+	// an unauthenticated caller must not be able to make this service emit
+	// outbound requests to GitHub.
+	update := &Update{}
+	router.HandleFunc("GET /update-check", update.Get)
+
 	buckets := &Buckets{}
 	router.HandleFunc("GET /buckets", buckets.GetAll)
 

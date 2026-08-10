@@ -1,6 +1,7 @@
 import TabView, { Tab } from "@/components/containers/tab-view";
 import Page from "@/context/page-context";
-import { UserIcon, UsersIcon } from "lucide-react";
+import { InfoIcon, UserIcon, UsersIcon } from "lucide-react";
+import AboutTab from "./about-tab";
 import AccountTab from "./account-tab";
 import UsersTab from "./users-tab";
 
@@ -23,6 +24,12 @@ const tabs: Tab[] = [
     title: "Users",
     icon: UsersIcon,
     Component: UsersTab,
+  },
+  {
+    name: "about",
+    title: "About",
+    icon: InfoIcon,
+    Component: AboutTab,
   },
 ];
 

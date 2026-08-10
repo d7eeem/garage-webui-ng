@@ -35,6 +35,10 @@ RUN pnpm run build
 FROM golang:1.25.12-alpine AS backend
 WORKDIR /app
 
+# The release version, injected into the binary below. Passed by CI as the git
+# tag (e.g. v3.3.0); defaults to "dev" for a plain local `docker build`.
+ARG VERSION=dev
+
 # Download modules first (cached until go.mod/go.sum change).
 COPY backend/go.mod backend/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
@@ -48,7 +52,7 @@ COPY --from=frontend /app/dist ./ui/dist
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux \
-    go build -tags=prod -trimpath -ldflags="-s -w" -o /main .
+    go build -tags=prod -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /main .
 
 # Staging directory for the runtime volume mount point. It exists only to be
 # copied (with the right ownership) into the runtime stage below.

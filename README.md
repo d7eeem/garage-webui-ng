@@ -179,6 +179,7 @@ Garage WebUI-NG reads your `garage.toml` and lets every setting be overridden by
 | `SESSION_IDLE_TIMEOUT_HOURS` | `2` | Sign out a session left untouched for this long. |
 | `AUTH_USER_PASS` | *(unset)* | **Legacy.** `user:bcrypt-hash` (comma-separated). Imported **once**, on the first start against an empty database, then **ignored forever**. |
 | `AUTH_VIEWER_USER_PASS` | *(unset)* | **Legacy.** Read-only viewer accounts, same format and same one-time import. |
+| `UPDATE_CHECK_ENABLED` | `false` | Check GitHub for a newer release, shown in **Settings → About**. **Off by default** — this is the only outbound request this service makes to anything other than the configured Garage cluster. When `true`, the server calls the GitHub releases API at most once every 6 hours (cached, 5s timeout); a failed or disabled check degrades quietly, never an error. |
 
 > **Users are not configured with environment variables.** Create the first administrator with the setup wizard, then manage accounts in **Settings → Users**. The two `AUTH_*` variables exist only to carry accounts over from a pre-database release; changing them afterwards has no effect. Full details in [`docs/authentication.md`](docs/authentication.md).
 
@@ -286,7 +287,8 @@ The backend serves everything under `/api`. It is primarily a **gateway to Garag
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/config` | Browser-safe subset of the Garage config (no secrets). |
+| `GET` | `/api/config` | Browser-safe subset of the Garage config (no secrets), plus the running app version. |
+| `GET` | `/api/update-check` | Whether a newer release exists. Disabled unless `UPDATE_CHECK_ENABLED=true`. |
 | `GET` | `/api/metrics` | Parsed Prometheus metrics for the dashboard panel. |
 | `GET` | `/api/buckets` | Enriched bucket list. |
 | `GET/PUT/DELETE` | `/api/browse/{bucket}/{key...}` | List / upload / download / delete objects. |
