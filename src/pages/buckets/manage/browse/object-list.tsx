@@ -96,12 +96,18 @@ const ObjectList = ({
           <span>Name</span>
           <span>Size</span>
           <span>Last Modified</span>
+          {/* The actions column. `Table.Head` renders one <th> per child, so
+              this must exist or the table declares 4 columns while every row
+              renders 5 — the browser then has no header to size the actions
+              column against, and it is pushed out of the container.
+              Visually empty, but named for screen readers. */}
+          <span className="sr-only">Actions</span>
         </Table.Head>
 
         <Table.Body>
           {isLoading ? (
             <tr>
-              <td colSpan={4}>
+              <td colSpan={5}>
                 <div className="h-[320px] flex items-center justify-center">
                   <Loading />
                 </div>
@@ -109,7 +115,7 @@ const ObjectList = ({
             </tr>
           ) : error ? (
             <tr>
-              <td colSpan={4}>
+              <td colSpan={5}>
                 <Alert status="error" icon={<CircleXIcon />}>
                   <span>{error.message}</span>
                 </Alert>
@@ -117,7 +123,7 @@ const ObjectList = ({
             </tr>
           ) : !prefixes.length && !objects.length ? (
             <tr>
-              <td className="text-center py-16" colSpan={4}>
+              <td className="text-center py-16" colSpan={5}>
                 No objects
               </td>
             </tr>
@@ -172,14 +178,16 @@ const ObjectList = ({
                   />
                 </td>
                 <td
-                  className="cursor-pointer"
+                  className="cursor-pointer max-w-0 w-full"
                   role="button"
                   onClick={() => onObjectClick(object)}
                 >
-                  <span className="flex items-center font-normal w-full">
+                  <span className="flex items-center font-normal w-full min-w-0">
                     <FilePreview ext={ext?.substring(1)} object={object} />
-                    <span className="truncate max-w-[40vw]">{filename}</span>
-                    {ext && <span className="text-base-content/60">{ext}</span>}
+                    <span className="truncate min-w-0">{filename}</span>
+                    {ext && (
+                      <span className="text-base-content/60 shrink-0">{ext}</span>
+                    )}
                     {isPublic && (
                       <span className="badge badge-ghost badge-sm ml-2 shrink-0">
                         Public
