@@ -34,6 +34,18 @@ describe("isWebsiteHostingConfigured", () => {
       isWebsiteHostingConfigured(mkConfig({ root_domain: ".web.ex.com" }))
     ).toBe(true);
   });
+
+  it("is true when only public_url is set", () => {
+    expect(
+      isWebsiteHostingConfigured(
+        mkConfig({ public_url: "https://web.ex.com" })
+      )
+    ).toBe(true);
+  });
+
+  it("is false when neither public_url nor root_domain is set", () => {
+    expect(isWebsiteHostingConfigured(mkConfig({}))).toBe(false);
+  });
 });
 
 describe("getBucketWebsiteBaseUrl", () => {
@@ -97,6 +109,71 @@ describe("getBucketWebsiteBaseUrl", () => {
       )
     ).toBe("http://mybucket.web.ex.com");
   });
+
+  it("applies a vhost-style public_url template", () => {
+    expect(
+      getBucketWebsiteBaseUrl(
+        "assets",
+        mkConfig({ public_url: "https://{bucket}.web.ex.com" })
+      )
+    ).toBe("https://assets.web.ex.com");
+  });
+
+  it("applies a path-style public_url template", () => {
+    expect(
+      getBucketWebsiteBaseUrl("assets", mkConfig({ public_url: "https://web.ex.com" }))
+    ).toBe("https://web.ex.com/assets");
+  });
+
+  it("strips a trailing slash from a path-style public_url", () => {
+    expect(
+      getBucketWebsiteBaseUrl(
+        "assets",
+        mkConfig({ public_url: "https://web.ex.com/" })
+      )
+    ).toBe("https://web.ex.com/assets");
+  });
+
+  it("prefers public_url over root_domain when both are set", () => {
+    expect(
+      getBucketWebsiteBaseUrl(
+        "assets",
+        mkConfig({
+          public_url: "https://{bucket}.web.ex.com",
+          root_domain: ".other.ex.com",
+          bind_addr: "[::]:3902",
+        })
+      )
+    ).toBe("https://assets.web.ex.com");
+  });
+
+  it("uses public_url even when root_domain is entirely absent", () => {
+    expect(
+      getBucketWebsiteBaseUrl(
+        "assets",
+        mkConfig({ public_url: "https://web.ex.com" })
+      )
+    ).toBe("https://web.ex.com/assets");
+  });
+
+  it("falls back to the derived URL when public_url is empty/whitespace", () => {
+    expect(
+      getBucketWebsiteBaseUrl(
+        "mybucket",
+        mkConfig({
+          public_url: "   ",
+          root_domain: ".web.ex.com",
+          bind_addr: "[::]:3902",
+        })
+      )
+    ).toBe("http://mybucket.web.ex.com:3902");
+  });
+
+  it("returns null with no bucket name even when public_url is set", () => {
+    expect(
+      getBucketWebsiteBaseUrl("", mkConfig({ public_url: "https://web.ex.com" }))
+    ).toBeNull();
+  });
 });
 
 describe("getBucketWebsiteObjectUrl", () => {
@@ -124,5 +201,15 @@ describe("getBucketWebsiteObjectUrl", () => {
         mkConfig({ root_domain: ".web.ex.com", bind_addr: "[::]:3902" })
       )
     ).toBe("http://mybucket.web.ex.com:3902/leading");
+  });
+
+  it("composes on top of a public_url override", () => {
+    expect(
+      getBucketWebsiteObjectUrl(
+        "assets",
+        "hp/dockhand-white.png",
+        mkConfig({ public_url: "https://{bucket}.web.ex.com" })
+      )
+    ).toBe("https://assets.web.ex.com/hp/dockhand-white.png");
   });
 });

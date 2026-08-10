@@ -11,5 +11,6 @@ type Config struct{}
 func (c *Config) GetAll(w http.ResponseWriter, r *http.Request) {
 	resp := schema.NewConfigResponse(utils.Garage.Config)
 	resp.Sharing = utils.Garage.IsSharingEnabled()
+	resp.S3Web.PublicURL = utils.Garage.GetWebPublicURL()
 	utils.ResponseSuccess(w, resp)
 }

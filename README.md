@@ -166,6 +166,7 @@ Garage WebUI-NG reads your `garage.toml` and lets every setting be overridden by
 | `API_BASE_URL` | from `garage.toml` | Garage **Admin API** endpoint (cluster/bucket/key management). |
 | `S3_ENDPOINT_URL` | from `garage.toml` | Garage **S3 API** endpoint (object browse/upload/download). |
 | `S3_PUBLIC_ENDPOINT_URL` | *(unset)* | Public S3 endpoint the browser can reach — enables **presigned share links**. |
+| `S3_WEB_PUBLIC_URL` | *(unset)* | Public base URL for **static website hosting**, overriding the `http://<bucket><root_domain>:<port>` address derived from `garage.toml`. Use `{bucket}` for vhost-style routing (`https://{bucket}.web.example.com`); without it the bucket becomes the first path segment (`https://web.example.com` → `https://web.example.com/mybucket`). Set this whenever a reverse proxy fronts Garage's web endpoint. |
 | `MAX_UPLOAD_SIZE_MB` | `512` | Largest single file the object browser accepts, in MB. A larger upload is refused with **413** before it is buffered. Must not exceed the body-size limit of any reverse proxy in front of the app (nginx `client_max_body_size`, Caddy `request_body max_size`). |
 | `S3_REGION` | `garage` | S3 region name. |
 | `CONFIG_PATH` | `/etc/garage.toml` | Path to the Garage config file to read. |
