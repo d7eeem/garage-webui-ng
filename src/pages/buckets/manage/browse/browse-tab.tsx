@@ -8,6 +8,7 @@ import Actions from "./actions";
 import { useBucketContext } from "../context";
 import ShareDialog from "./share-dialog";
 import BulkActions from "./bulk-actions";
+import UploadPanel from "./upload-panel";
 
 const getInitialPrefixes = (searchParams: URLSearchParams) => {
   const prefix = searchParams.get("prefix");
@@ -67,6 +68,8 @@ const BrowseTab = () => {
           prefixHistory={prefixHistory}
           actions={<Actions prefix={prefix} />}
         />
+
+        <UploadPanel bucketName={bucketName} />
 
         {selected.size > 0 && (
           <BulkActions

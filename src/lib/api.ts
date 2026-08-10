@@ -48,6 +48,23 @@ const readCookie = (name: string) =>
 const CSRF_COOKIE_NAME = "csrf_token";
 const CSRF_HEADER_NAME = "X-CSRF-Token";
 
+/**
+ * Absolute URL for an API path, honouring BASE_PATH — the same resolution
+ * `api.fetch` performs. Exported for the upload transport, which has to use
+ * XMLHttpRequest (fetch cannot report upload progress) and therefore cannot go
+ * through `api.fetch`.
+ */
+export const apiUrl = (path: string) =>
+  new URL(API_URL + path, window.location.origin).toString();
+
+/**
+ * The CSRF header pair every write must carry. `middleware.CSRF` exempts only
+ * `POST /auth/login` and `POST /setup`; anything else without this is 403.
+ */
+export const csrfHeader = (): Record<string, string> => ({
+  [CSRF_HEADER_NAME]: readCookie(CSRF_COOKIE_NAME) ?? "",
+});
+
 export class APIError extends Error {
   status!: number;
 
@@ -63,9 +80,7 @@ const api = {
     // Sent on every request, reads included: it is harmless where the server
     // does not check it, and attaching it in one place means no caller can
     // forget it on a write.
-    const headers: Record<string, string> = {
-      [CSRF_HEADER_NAME]: readCookie(CSRF_COOKIE_NAME) ?? "",
-    };
+    const headers: Record<string, string> = { ...csrfHeader() };
     const _url = new URL(API_URL + url, window.location.origin);
 
     if (options?.params) {
