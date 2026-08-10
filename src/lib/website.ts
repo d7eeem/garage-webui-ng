@@ -1,3 +1,4 @@
+import { encodeObjectPath } from "@/lib/api";
 import type { Config } from "@/types/garage";
 
 /**
@@ -82,5 +83,36 @@ export function getBucketWebsiteObjectUrl(
   const base = getBucketWebsiteBaseUrl(bucketName, config);
   if (base == null) return null;
   const key = (objectKey ?? "").replace(/^\/+/, "");
-  return `${base}/${key}`;
+  return `${base}/${encodeObjectPath(key)}`;
+}
+
+/**
+ * Whether — and where — a bucket's objects are anonymously readable.
+ *
+ * Anonymous read is gated exclusively by Garage's website-endpoint toggle
+ * (`bucket.websiteAccess`); a configured public base URL alone never implies
+ * public access. Checked in this order:
+ *
+ *   1. `websiteAccess !== true` -> "private", full stop.
+ *   2. no working public base URL -> "public-no-url" (access is open, but no
+ *      URL can be shown/copied until the operator configures one).
+ *   3. otherwise -> "public" with the object's URL.
+ */
+export type PublicAccess =
+  | { state: "public"; url: string }
+  | { state: "public-no-url" }
+  | { state: "private" };
+
+export function getPublicAccess(
+  websiteAccess: boolean | undefined | null,
+  bucketName: string,
+  objectKey: string,
+  config?: Config
+): PublicAccess {
+  if (websiteAccess !== true) return { state: "private" };
+
+  const url = getBucketWebsiteObjectUrl(bucketName, objectKey, config);
+  if (url == null) return { state: "public-no-url" };
+
+  return { state: "public", url };
 }
