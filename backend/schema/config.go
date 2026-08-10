@@ -34,6 +34,10 @@ type ConfigResponse struct {
 	S3API   S3APIResponse `json:"s3_api"`
 	S3Web   S3WebResponse `json:"s3_web"`
 	Sharing bool          `json:"sharing"`
+	// Version is the running build's release identity, injected at build time.
+	// Not from garage.toml, so NewConfigResponse leaves it empty — the handler
+	// fills it, exactly as it fills Sharing.
+	Version string `json:"version"`
 }
 
 type S3APIResponse struct {

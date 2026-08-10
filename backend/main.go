@@ -35,8 +35,16 @@ func main() {
 	resetPassword := flag.String("reset-password", "", "set a new password for `username` (prompts; local database access required)")
 	createAdmin := flag.String("create-admin", "", "create a new administrator called `username` (prompts)")
 	listUsers := flag.Bool("list-users", false, "list accounts in the user database and exit")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 
 	flag.Parse()
+
+	// -version is the cheapest possible branch: it must not need a database or
+	// a Garage connection, so it runs before anything else.
+	if *showVersion {
+		fmt.Println(Version())
+		return
+	}
 
 	// -health stays the first and cheapest branch: it is the container
 	// HEALTHCHECK and runs on every probe interval.
@@ -55,6 +63,10 @@ func main() {
 	// Initialize app
 	utils.InitCacheManager()
 	sessionMgr := utils.InitSessionManager()
+
+	// Package router cannot import package main, so the version it reports
+	// through GET /config and GET /update-check is pushed in here.
+	router.AppVersion = Version()
 
 	if err := utils.Garage.LoadConfig(); err != nil {
 		log.Println("Cannot load garage config!", err)
