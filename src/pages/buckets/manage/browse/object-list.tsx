@@ -5,6 +5,8 @@ import mime from "mime/lite";
 import { Object } from "./types";
 import { API_URL } from "@/lib/api";
 import {
+  ChevronDown,
+  ChevronUp,
   CircleXIcon,
   FileArchive,
   FileIcon,
@@ -16,9 +18,17 @@ import ObjectActions from "./object-actions";
 import GotoTopButton from "@/components/ui/goto-top-btn";
 import Button from "@/components/ui/button";
 import Checkbox from "@/components/ui/checkbox";
-import { Dispatch, SetStateAction } from "react";
+import { Dispatch, ReactNode, SetStateAction, useMemo, useState } from "react";
 import { useConfig } from "@/hooks/useConfig";
 import { getPublicAccess } from "@/lib/website";
+import { classifyMedia, mediaViewer } from "./media-viewer";
+import {
+  DEFAULT_SORT,
+  SortColumn,
+  SortState,
+  sortObjects,
+  sortPrefixes,
+} from "./sorting";
 
 type Props = {
   prefix?: string;
@@ -44,12 +54,46 @@ const ObjectList = ({
     isFetchingNextPage,
   } = useBrowseObjects(bucketName, { prefix, limit: 1000 });
 
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+
   const pages = data?.pages ?? [];
   const prefixes = pages.flatMap((page) => page.prefixes);
   const objects = pages.flatMap((page) => page.objects);
   const currentPrefix = pages[0]?.prefix ?? "";
 
-  const allLoadedKeys = objects.map((object) => currentPrefix + object.objectKey);
+  // The sort is client-side over whatever pages have been loaded so far — S3's
+  // ListObjectsV2 has no server-side sort. The hint rendered below (when
+  // hasNextPage is true and the sort isn't the default) is what keeps that
+  // honest for the user.
+  const sortedObjects = useMemo(() => sortObjects(objects, sort), [objects, sort]);
+  const sortedPrefixes = useMemo(
+    () => sortPrefixes(prefixes, sort.column === "name" ? sort.direction : "asc"),
+    [prefixes, sort]
+  );
+
+  const toggleSort = (column: SortColumn) => {
+    setSort((prev) =>
+      prev.column === column
+        ? { column, direction: prev.direction === "asc" ? "desc" : "asc" }
+        : { column, direction: "asc" }
+    );
+  };
+
+  const previewable = useMemo(
+    () =>
+      sortedObjects
+        .filter((object) => classifyMedia(object.objectKey) !== null)
+        .map((object) => ({ objectKey: object.objectKey, url: object.url })),
+    [sortedObjects]
+  );
+
+  const isPartialSort =
+    hasNextPage &&
+    (sort.column !== DEFAULT_SORT.column || sort.direction !== DEFAULT_SORT.direction);
+
+  const allLoadedKeys = sortedObjects.map(
+    (object) => currentPrefix + object.objectKey
+  );
   const allLoadedSelected =
     allLoadedKeys.length > 0 && allLoadedKeys.every((key) => selected.has(key));
 
@@ -78,12 +122,30 @@ const ObjectList = ({
   };
 
   const onObjectClick = (object: Object) => {
+    if (classifyMedia(object.objectKey) !== null) {
+      const index = previewable.findIndex(
+        (item) => item.objectKey === object.objectKey
+      );
+      mediaViewer.open({ items: previewable, index: Math.max(0, index) });
+      return;
+    }
+
+    // Not previewable (e.g. .zip, .docx, .svg): keep today's behaviour
+    // exactly. The backend serves it as an attachment, so this is the
+    // download path.
     // object.url arrives percent-encoded from the API; do not re-encode.
     window.open(API_URL + object.url + "?view=1", "_blank");
   };
 
   return (
     <div className="overflow-x-auto min-h-[400px]">
+      {isPartialSort && (
+        <p className="text-xs text-base-content/60 px-2 pb-1">
+          Sorted across the objects loaded so far — load more to sort the
+          rest.
+        </p>
+      )}
+
       <Table>
         <Table.Head>
           <span>
@@ -93,9 +155,15 @@ const ObjectList = ({
               aria-label="Select all loaded objects"
             />
           </span>
-          <span>Name</span>
-          <span>Size</span>
-          <span>Last Modified</span>
+          <SortableHeader column="name" sort={sort} onSort={toggleSort}>
+            Name
+          </SortableHeader>
+          <SortableHeader column="size" sort={sort} onSort={toggleSort}>
+            Size
+          </SortableHeader>
+          <SortableHeader column="lastModified" sort={sort} onSort={toggleSort}>
+            Last Modified
+          </SortableHeader>
           {/* The actions column. `Table.Head` renders one <th> per child, so
               this must exist or the table declares 4 columns while every row
               renders 5 — the browser then has no header to size the actions
@@ -121,7 +189,7 @@ const ObjectList = ({
                 </Alert>
               </td>
             </tr>
-          ) : !prefixes.length && !objects.length ? (
+          ) : !sortedPrefixes.length && !sortedObjects.length ? (
             <tr>
               <td className="text-center py-16" colSpan={5}>
                 No objects
@@ -129,7 +197,7 @@ const ObjectList = ({
             </tr>
           ) : null}
 
-          {prefixes.map((prefix) => (
+          {sortedPrefixes.map((prefix) => (
             <tr
               key={prefix}
               className="hover:bg-neutral/60 hover:text-neutral-content group"
@@ -153,7 +221,7 @@ const ObjectList = ({
             </tr>
           ))}
 
-          {objects.map((object) => {
+          {sortedObjects.map((object) => {
             const extIdx = object.objectKey.lastIndexOf(".");
             const filename =
               extIdx >= 0
@@ -224,6 +292,54 @@ const ObjectList = ({
 
       <GotoTopButton />
     </div>
+  );
+};
+
+type SortableHeaderProps = {
+  column: SortColumn;
+  sort: SortState;
+  onSort: (column: SortColumn) => void;
+  children: ReactNode;
+};
+
+const COLUMN_LABEL: Record<SortColumn, string> = {
+  name: "name",
+  size: "size",
+  lastModified: "last modified",
+};
+
+/**
+ * A sortable column header. `Table.Head` renders one <th> per direct child,
+ * so this is itself a single child slot — see the comment above the actions
+ * column in ObjectList. `Table.Head` also owns the <th> it wraps this in, so
+ * there is no prop path to put `aria-sort` on the <th> itself; it goes on
+ * this component's root <span> instead.
+ */
+const SortableHeader = ({ column, sort, onSort, children }: SortableHeaderProps) => {
+  const isActive = sort.column === column;
+
+  return (
+    <span
+      aria-sort={
+        isActive ? (sort.direction === "asc" ? "ascending" : "descending") : undefined
+      }
+    >
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 hover:text-base-content"
+        onClick={() => onSort(column)}
+        aria-label={`Sort by ${COLUMN_LABEL[column]}`}
+      >
+        {children}
+        {isActive ? (
+          sort.direction === "asc" ? (
+            <ChevronUp size={14} />
+          ) : (
+            <ChevronDown size={14} />
+          )
+        ) : null}
+      </button>
+    </span>
   );
 };
 

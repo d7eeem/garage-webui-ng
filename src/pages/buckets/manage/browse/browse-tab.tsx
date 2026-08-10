@@ -8,6 +8,7 @@ import Actions from "./actions";
 import { useBucketContext } from "../context";
 import ShareDialog from "./share-dialog";
 import BulkActions from "./bulk-actions";
+import MediaViewer from "./media-viewer";
 
 const getInitialPrefixes = (searchParams: URLSearchParams) => {
   const prefix = searchParams.get("prefix");
@@ -84,6 +85,7 @@ const BrowseTab = () => {
         />
 
         <ShareDialog />
+        <MediaViewer />
       </Card>
     </div>
   );
