@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 // TestPathValueDecodesWildcard confirms the load-bearing assumption behind
@@ -59,6 +61,39 @@ func TestNormalizeListLimit(t *testing.T) {
 			got := normalizeListLimit(tt.raw)
 			if got != tt.want {
 				t.Errorf("normalizeListLimit(%q) = %d, want %d", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+// fakeAPIError is a minimal smithy.APIError implementation for exercising
+// isNotFoundErr against an error code the SDK's concrete s3/types package
+// does not model (e.g. "AccessDenied" has no matching struct there).
+type fakeAPIError struct{ code string }
+
+func (e fakeAPIError) Error() string                 { return e.code }
+func (e fakeAPIError) ErrorCode() string             { return e.code }
+func (e fakeAPIError) ErrorMessage() string          { return "" }
+func (e fakeAPIError) ErrorFault() smithy.ErrorFault { return smithy.FaultUnknown }
+
+func TestIsNotFoundErr(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "HeadObject miss (NotFound)", err: &types.NotFound{}, want: true},
+		{name: "GetObject miss (NoSuchKey)", err: &types.NoSuchKey{}, want: true},
+		{name: "unrelated API error code", err: fakeAPIError{code: "AccessDenied"}, want: false},
+		{name: "plain non-API error", err: errors.New("boom"), want: false},
+		{name: "nil error", err: nil, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isNotFoundErr(tt.err)
+			if got != tt.want {
+				t.Errorf("isNotFoundErr(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

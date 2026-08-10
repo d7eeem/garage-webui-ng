@@ -3,7 +3,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { websiteConfigSchema, WebsiteConfigSchema } from "../schema";
 import { useEffect } from "react";
 import { useDebounce } from "@/hooks/useDebounce";
-import { useUpdateBucket } from "../hooks";
+import { useObjectExists, useUpdateBucket } from "../hooks";
 import { useConfig } from "@/hooks/useConfig";
 import { CircleXIcon, Copy, Info, LinkIcon } from "lucide-react";
 import { Alert } from "react-daisyui";
@@ -17,6 +17,7 @@ import {
   getBucketWebsiteBaseUrl,
   isWebsiteHostingConfigured,
 } from "@/lib/website";
+import SaveStatus from "./save-status";
 
 const WebsiteAccessSection = () => {
   const { canWrite } = useAuth();
@@ -30,6 +31,20 @@ const WebsiteAccessSection = () => {
   const websiteUrl = getBucketWebsiteBaseUrl(bucketName, config);
 
   const updateMutation = useUpdateBucket(data?.id);
+
+  // Probe the PERSISTED config, not the live form values — the form value
+  // changes on every keystroke, which would fire a request per character.
+  // `data` only changes when a save round-trips.
+  const indexDoc = data?.websiteConfig?.indexDocument;
+  const errorDoc = data?.websiteConfig?.errorDocument;
+  const indexPresence = useObjectExists(
+    bucketName,
+    data?.websiteAccess ? indexDoc : null
+  );
+  const errorPresence = useObjectExists(
+    bucketName,
+    data?.websiteAccess ? errorDoc : null
+  );
 
   const onChange = useDebounce((values: DeepPartial<WebsiteConfigSchema>) => {
     const data = {
@@ -62,7 +77,7 @@ const WebsiteAccessSection = () => {
 
   return (
     <div className="mt-8">
-      <div className="flex flex-row gap-2">
+      <div className="flex flex-row items-center gap-2">
         <p className="label label-text py-0 grow-0">Website Access</p>
         <Button
           href="https://garagehq.deuxfleurs.fr/documentation/cookbook/exposing-websites"
@@ -73,6 +88,11 @@ const WebsiteAccessSection = () => {
         >
           <Info size={16} />
         </Button>
+        <SaveStatus
+          isPending={updateMutation.isPending}
+          isSuccess={updateMutation.isSuccess}
+          isError={updateMutation.isError}
+        />
       </div>
 
       <ToggleField
@@ -85,18 +105,34 @@ const WebsiteAccessSection = () => {
       {isEnabled && (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <InputField
-              form={form}
-              name="websiteConfig.indexDocument"
-              title="Index Document"
-              disabled={!canWrite}
-            />
-            <InputField
-              form={form}
-              name="websiteConfig.errorDocument"
-              title="Error Document"
-              disabled={!canWrite}
-            />
+            <div>
+              <InputField
+                form={form}
+                name="websiteConfig.indexDocument"
+                title="Index Document"
+                disabled={!canWrite}
+              />
+              {indexPresence.presence === "missing" ? (
+                <p className="text-xs text-warning mt-1">
+                  Not found in this bucket — visitors will get an error until
+                  you upload it.
+                </p>
+              ) : null}
+            </div>
+            <div>
+              <InputField
+                form={form}
+                name="websiteConfig.errorDocument"
+                title="Error Document"
+                disabled={!canWrite}
+              />
+              {errorPresence.presence === "missing" ? (
+                <p className="text-xs text-warning mt-1">
+                  Not found in this bucket — visitors will get an error until
+                  you upload it.
+                </p>
+              ) : null}
+            </div>
           </div>
 
           {websiteUrl ? (
