@@ -197,6 +197,32 @@ Garage WebUI-NG reads your `garage.toml` and lets every setting be overridden by
 - **Export (download / share)** — use the per-row **download** action, or the row menu → **Share** to generate an expiring **presigned link** (15 min → 7 days) or copy the object's **public website URL** when website hosting is enabled.
 - **Bulk operations** — select multiple objects to delete them in one request.
 
+### Permanent public asset URLs
+
+Garage has exactly one anonymous-read mechanism — the **website endpoint** —
+so "public read" *is* the **Public read (website hosting)** toggle on a
+bucket's Overview tab; there is no separate ACL or "public" flag.
+
+1. Create (or open) a bucket and give it a **global alias** — the website
+   hostname is derived from it, so a bucket with none cannot be served.
+2. On the bucket's **Overview** tab, enable **Public read (website hosting)**.
+   Anyone who can reach Garage's website endpoint can now read objects in
+   this bucket without signing in; uploads and deletions still require
+   credentials.
+3. Upload an object in **Browse**. When it finishes, the upload panel offers
+   a **Copy URL** action; the same permanent URL is also on the row's
+   **Share** dialog and as an **[Open]** link.
+4. Set `S3_WEB_PUBLIC_URL` (see [`.env.example`](.env.example)) so those URLs
+   point at the address your users can actually reach — it must route to
+   Garage's **web** port (`s3_web`/port `3902` in the Compose stack), **not**
+   the S3 API port. Without it, URLs are derived from `garage.toml`'s
+   `[s3_web] root_domain`, which is usually only reachable inside your
+   network.
+
+There is no anonymous directory listing — Garage serves the configured index
+document for a prefix and the error document otherwise, never a listing of
+the bucket root.
+
 ### Command-line flags
 
 The binary is also its own recovery tool. These run offline against the user

@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_CONCURRENT_UPLOADS, uploadFile } from "./upload-queue";
+import {
+  getUploadItemPublicUrl,
+  MAX_CONCURRENT_UPLOADS,
+  resolveUploadContentType,
+  uploadFile,
+} from "./upload-queue";
 import uploadQueue from "./upload-queue";
+import type { Config, S3Web } from "@/types/garage";
+
+const mkConfig = (s3_web?: Partial<S3Web>): Config =>
+  s3_web ? { s3_web: s3_web as S3Web } : {};
 
 /** Minimal fake XMLHttpRequest — no network is involved in any test here. */
 class FakeXhr {
@@ -40,6 +49,113 @@ const makeFile = (name: string, size = 100) => {
   const file = new File([new Uint8Array(size)], name);
   return file;
 };
+
+describe("resolveUploadContentType", () => {
+  it("preserves a non-empty fileType unchanged", () => {
+    expect(resolveUploadContentType("photo.svg", "text/x-custom")).toBe(
+      "text/x-custom"
+    );
+  });
+
+  it("resolves .svg", () => {
+    expect(resolveUploadContentType("homepage.svg", "")).toBe(
+      "image/svg+xml"
+    );
+  });
+
+  it("resolves .png", () => {
+    expect(resolveUploadContentType("logo.png", "")).toBe("image/png");
+  });
+
+  it("resolves .jpg", () => {
+    expect(resolveUploadContentType("photo.jpg", "")).toBe("image/jpeg");
+  });
+
+  it("resolves .jpeg", () => {
+    expect(resolveUploadContentType("photo.jpeg", "")).toBe("image/jpeg");
+  });
+
+  it("resolves .webp", () => {
+    expect(resolveUploadContentType("photo.webp", "")).toBe("image/webp");
+  });
+
+  it("resolves .gif", () => {
+    expect(resolveUploadContentType("anim.gif", "")).toBe("image/gif");
+  });
+
+  it("resolves .css", () => {
+    expect(resolveUploadContentType("styles.css", "")).toBe("text/css");
+  });
+
+  it("resolves .js", () => {
+    expect(resolveUploadContentType("script.js", "")).toBe(
+      "text/javascript"
+    );
+  });
+
+  it("falls back to application/octet-stream for an unknown extension", () => {
+    expect(resolveUploadContentType("data.unknownext", "")).toBe(
+      "application/octet-stream"
+    );
+  });
+
+  // mime/lite does not resolve .ico (unlike the full `mime` package); that
+  // gap is closed authoritatively server-side by
+  // resolveUploadContentType/mime.TypeByExtension in backend/router/browse.go,
+  // which does cover .ico. This test documents the frontend-side fallback
+  // rather than asserting a false "correct" mime type for .ico here.
+  it("falls back to application/octet-stream for .ico (closed server-side)", () => {
+    expect(resolveUploadContentType("favicon.ico", "")).toBe(
+      "application/octet-stream"
+    );
+  });
+});
+
+describe("getUploadItemPublicUrl", () => {
+  const publicUrlConfig = mkConfig({
+    public_url: "https://{bucket}.web.ex.local",
+  });
+
+  it("builds the URL from item.bucket, not some other bucket name", () => {
+    const url = getUploadItemPublicUrl(
+      { bucket: "assets", key: "dashboard/homepage.svg" },
+      true,
+      publicUrlConfig
+    );
+    expect(url).toBe("https://assets.web.ex.local/dashboard/homepage.svg");
+  });
+
+  it("never builds from a different bucket than the item's own, even if one is passed nearby", () => {
+    // Regression guard for the cross-bucket bug: an item belonging to
+    // "other-bucket" must never produce a URL under "assets", no matter
+    // what bucket name a caller happens to have in scope elsewhere.
+    const url = getUploadItemPublicUrl(
+      { bucket: "other-bucket", key: "file.png" },
+      true,
+      publicUrlConfig
+    );
+    expect(url).toBe("https://other-bucket.web.ex.local/file.png");
+    expect(url).not.toContain("assets");
+  });
+
+  it("is null when the item's bucket has no anonymous read", () => {
+    const url = getUploadItemPublicUrl(
+      { bucket: "assets", key: "dashboard/homepage.svg" },
+      false,
+      publicUrlConfig
+    );
+    expect(url).toBeNull();
+  });
+
+  it("is null when anonymous read is on but no public URL can be built", () => {
+    const url = getUploadItemPublicUrl(
+      { bucket: "assets", key: "dashboard/homepage.svg" },
+      true,
+      undefined
+    );
+    expect(url).toBeNull();
+  });
+});
 
 describe("uploadFile", () => {
   beforeEach(() => {

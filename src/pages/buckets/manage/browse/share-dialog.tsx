@@ -5,9 +5,9 @@ import { useConfig } from "@/hooks/useConfig";
 import { useState } from "react";
 import Input from "@/components/ui/input";
 import Button from "@/components/ui/button";
-import { Copy, FileWarningIcon } from "lucide-react";
+import { Copy, ExternalLink, FileWarningIcon } from "lucide-react";
 import { copyToClipboard, handleError } from "@/lib/utils";
-import { getBucketWebsiteObjectUrl } from "@/lib/website";
+import { getPublicAccess } from "@/lib/website";
 import Checkbox from "@/components/ui/checkbox";
 import { useShareLink } from "./hooks";
 
@@ -32,7 +32,12 @@ const ShareDialog = () => {
   const shareLink = useShareLink(bucketName);
 
   const objectKey = (data?.prefix ?? "") + (data?.key ?? "");
-  const websiteUrl = getBucketWebsiteObjectUrl(bucketName, objectKey, config);
+  const publicAccess = getPublicAccess(
+    bucket.websiteAccess,
+    bucketName,
+    objectKey,
+    config
+  );
 
   const onGenerateLink = () => {
     shareLink.mutate(
@@ -100,33 +105,51 @@ const ShareDialog = () => {
           </Alert>
         )}
 
-        {!bucket.websiteAccess && (
+        {publicAccess.state === "private" && (
           <Alert className="mb-4 items-start text-sm">
             <FileWarningIcon className="mt-1 shrink-0" />
             <span>
-              This bucket has no website access, so it has no public URL.
+              This bucket has no public read access, so it has no public URL.
               {config?.sharing ? " Private links above still work." : ""}
             </span>
           </Alert>
         )}
-        {websiteUrl && (
+        {publicAccess.state === "public-no-url" && (
+          <Alert className="mb-4 items-start text-sm">
+            <FileWarningIcon className="mt-1 shrink-0" />
+            <span>
+              Public read is enabled for this bucket, but no public URL can be
+              built yet. Set <code>S3_WEB_PUBLIC_URL</code> (or Garage's{" "}
+              <code>[s3_web] root_domain</code>) and restart the app.
+            </span>
+          </Alert>
+        )}
+        {publicAccess.state === "public" && (
           <div className="mt-2">
             <p className="label label-text py-0">Public link (no expiry)</p>
             <div className="relative mt-2">
               <Input
-                value={websiteUrl}
-                className="w-full pr-12"
+                value={publicAccess.url}
+                className="w-full pr-20"
                 onFocus={(e) => e.target.select()}
                 readOnly
               />
-              <Button
-                icon={Copy}
-                onClick={() => copyToClipboard(websiteUrl)}
-                className="absolute top-0 right-0"
-                color="ghost"
-              />
+              <div className="absolute top-0 right-0 flex flex-row">
+                <Button
+                  href={publicAccess.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  icon={ExternalLink}
+                  color="ghost"
+                />
+                <Button
+                  icon={Copy}
+                  onClick={() => copyToClipboard(publicAccess.url)}
+                  color="ghost"
+                />
+              </div>
             </div>
-            {websiteUrl.startsWith("http://") &&
+            {publicAccess.url.startsWith("http://") &&
               window.location.protocol === "https:" && (
                 <p className="text-xs text-warning mt-1">
                   This link is plain HTTP while the console is served over

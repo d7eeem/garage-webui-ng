@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getBucketWebsiteBaseUrl,
   getBucketWebsiteObjectUrl,
+  getPublicAccess,
   isWebsiteHostingConfigured,
 } from "@/lib/website";
 import type { Config, S3Web } from "@/types/garage";
@@ -211,5 +212,135 @@ describe("getBucketWebsiteObjectUrl", () => {
         mkConfig({ public_url: "https://{bucket}.web.ex.com" })
       )
     ).toBe("https://assets.web.ex.com/hp/dockhand-white.png");
+  });
+
+  it("vhost style: encodes a nested key", () => {
+    expect(
+      getBucketWebsiteObjectUrl(
+        "assets",
+        "dashboard/homepage.svg",
+        mkConfig({ public_url: "https://{bucket}.web.ex.local" })
+      )
+    ).toBe("https://assets.web.ex.local/dashboard/homepage.svg");
+  });
+
+  it("path style: encodes a nested key", () => {
+    expect(
+      getBucketWebsiteObjectUrl(
+        "assets",
+        "dashboard/homepage.svg",
+        mkConfig({ public_url: "https://web.ex.local" })
+      )
+    ).toBe("https://web.ex.local/assets/dashboard/homepage.svg");
+  });
+
+  it("percent-encodes spaces and parentheses in a key segment", () => {
+    expect(
+      getBucketWebsiteObjectUrl(
+        "assets",
+        "icons/my icon (2).png",
+        mkConfig({ public_url: "https://{bucket}.web.ex.local" })
+      )
+    ).toBe("https://assets.web.ex.local/icons/my%20icon%20(2).png");
+  });
+
+  it("percent-encodes non-ASCII characters in a key segment", () => {
+    expect(
+      getBucketWebsiteObjectUrl(
+        "assets",
+        "docs/تقرير.png",
+        mkConfig({ public_url: "https://{bucket}.web.ex.local" })
+      )
+    ).toBe(
+      "https://assets.web.ex.local/docs/%D8%AA%D9%82%D8%B1%D9%8A%D8%B1.png"
+    );
+  });
+
+  it("percent-encodes a '#' so it does not truncate the URL", () => {
+    expect(
+      getBucketWebsiteObjectUrl(
+        "assets",
+        "notes#1.png",
+        mkConfig({ public_url: "https://{bucket}.web.ex.local" })
+      )
+    ).toBe("https://assets.web.ex.local/notes%231.png");
+  });
+
+  it("returns just the base URL for an empty key", () => {
+    expect(
+      getBucketWebsiteObjectUrl(
+        "assets",
+        "",
+        mkConfig({ public_url: "https://{bucket}.web.ex.local" })
+      )
+    ).toBe("https://assets.web.ex.local/");
+  });
+
+  it("re-encodes a literal '%' already present in a key", () => {
+    expect(
+      getBucketWebsiteObjectUrl(
+        "assets",
+        "100%done.png",
+        mkConfig({ public_url: "https://{bucket}.web.ex.local" })
+      )
+    ).toBe("https://assets.web.ex.local/100%25done.png");
+  });
+
+  it("keeps '/' separators literal across multiple nested segments", () => {
+    expect(
+      getBucketWebsiteObjectUrl(
+        "assets",
+        "a/b/c/d.png",
+        mkConfig({ public_url: "https://{bucket}.web.ex.local" })
+      )
+    ).toBe("https://assets.web.ex.local/a/b/c/d.png");
+  });
+});
+
+describe("getPublicAccess", () => {
+  const publicUrlConfig = mkConfig({ public_url: "https://{bucket}.web.ex.local" });
+
+  it("is private when websiteAccess is false, even with a public_url configured", () => {
+    expect(
+      getPublicAccess(false, "assets", "dashboard/homepage.svg", publicUrlConfig)
+    ).toEqual({ state: "private" });
+  });
+
+  it("is private when websiteAccess is undefined", () => {
+    expect(
+      getPublicAccess(undefined, "assets", "dashboard/homepage.svg", publicUrlConfig)
+    ).toEqual({ state: "private" });
+  });
+
+  it("is private when websiteAccess is null", () => {
+    expect(
+      getPublicAccess(null, "assets", "dashboard/homepage.svg", publicUrlConfig)
+    ).toEqual({ state: "private" });
+  });
+
+  // Ordering guard: websiteAccess must be checked BEFORE the URL lookup.
+  // With no public URL configured, a reversed order would report this private
+  // bucket as "public-no-url" — i.e. "public read enabled" — which is exactly
+  // backwards. Every other private case here supplies a working URL, so this
+  // is the only case that pins the order.
+  it("is private when websiteAccess is false and no public URL is configured", () => {
+    expect(
+      getPublicAccess(false, "assets", "dashboard/homepage.svg", undefined)
+    ).toEqual({ state: "private" });
+  });
+
+  it("is public-no-url when websiteAccess is true but no public URL can be built", () => {
+    expect(
+      getPublicAccess(true, "assets", "dashboard/homepage.svg", undefined)
+    ).toEqual({ state: "public-no-url" });
+  });
+
+  it("is public with a URL when websiteAccess is true and a public URL exists", () => {
+    expect(
+      getPublicAccess(true, "assets", "dashboard/homepage.svg", publicUrlConfig)
+    ).toEqual({
+      state: "public",
+      url: "https://assets.web.ex.local/dashboard/homepage.svg",
+    });
   });
 });

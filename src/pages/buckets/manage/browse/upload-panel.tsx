@@ -1,9 +1,15 @@
 import { useEffect } from "react";
-import { AlertCircle, Check, X } from "lucide-react";
+import { AlertCircle, Check, Copy, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import Button from "@/components/ui/button";
-import uploadQueue, { useUploadQueue } from "./upload-queue";
+import uploadQueue, {
+  getUploadItemPublicUrl,
+  useUploadQueue,
+} from "./upload-queue";
+import { useBucketContext } from "../context";
+import { useConfig } from "@/hooks/useConfig";
+import { copyToClipboard } from "@/lib/utils";
 
 type Props = {
   bucketName: string;
@@ -18,6 +24,8 @@ type Props = {
 const UploadPanel = ({ bucketName }: Props) => {
   const { items, completedCount } = useUploadQueue();
   const queryClient = useQueryClient();
+  const { bucket } = useBucketContext();
+  const { data: config } = useConfig();
 
   useEffect(() => {
     if (completedCount > 0) {
@@ -69,6 +77,17 @@ const UploadPanel = ({ bucketName }: Props) => {
           const pct =
             item.size > 0 ? Math.round((item.loaded / item.size) * 100) : 0;
 
+          // Only known accurately for the currently mounted bucket — the
+          // panel shows items enqueued from other buckets too, and this
+          // component has no way to look up a foreign bucket's
+          // websiteAccess. getUploadItemPublicUrl still builds strictly
+          // from item.bucket (never the mounted bucketName), so this gate
+          // just decides when we trust the websiteAccess value we pass in.
+          const publicUrl =
+            item.status === "done" && item.bucket === bucketName
+              ? getUploadItemPublicUrl(item, bucket.websiteAccess, config)
+              : null;
+
           return (
             <li
               key={item.id}
@@ -110,6 +129,16 @@ const UploadPanel = ({ bucketName }: Props) => {
                 {item.status === "done" && (
                   <span className="flex flex-row items-center gap-1 text-success text-xs">
                     <Check size={14} /> Done
+                    {publicUrl && (
+                      <Button
+                        icon={Copy}
+                        size="sm"
+                        color="ghost"
+                        shape="circle"
+                        aria-label={`Copy public URL for ${item.name}`}
+                        onClick={() => copyToClipboard(publicUrl)}
+                      />
+                    )}
                   </span>
                 )}
 
