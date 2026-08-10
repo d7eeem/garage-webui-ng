@@ -120,19 +120,22 @@ describe("getBucketWebsiteBaseUrl", () => {
     ).toBe("https://assets.web.ex.com");
   });
 
-  it("applies a path-style public_url template", () => {
+  // Garage's website endpoint resolves the bucket from the Host header only;
+  // a template with no {bucket} token cannot address any bucket, so it must
+  // not silently fall back to a path-style URL that would always 404.
+  it("returns null when the public_url template has no {bucket} token", () => {
     expect(
       getBucketWebsiteBaseUrl("assets", mkConfig({ public_url: "https://web.ex.com" }))
-    ).toBe("https://web.ex.com/assets");
+    ).toBeNull();
   });
 
-  it("strips a trailing slash from a path-style public_url", () => {
+  it("strips a trailing slash from a public_url template before substitution", () => {
     expect(
       getBucketWebsiteBaseUrl(
         "assets",
-        mkConfig({ public_url: "https://web.ex.com/" })
+        mkConfig({ public_url: "https://{bucket}.web.ex.com/" })
       )
-    ).toBe("https://web.ex.com/assets");
+    ).toBe("https://assets.web.ex.com");
   });
 
   it("prefers public_url over root_domain when both are set", () => {
@@ -152,9 +155,9 @@ describe("getBucketWebsiteBaseUrl", () => {
     expect(
       getBucketWebsiteBaseUrl(
         "assets",
-        mkConfig({ public_url: "https://web.ex.com" })
+        mkConfig({ public_url: "https://{bucket}.web.ex.com" })
       )
-    ).toBe("https://web.ex.com/assets");
+    ).toBe("https://assets.web.ex.com");
   });
 
   it("falls back to the derived URL when public_url is empty/whitespace", () => {
@@ -172,7 +175,10 @@ describe("getBucketWebsiteBaseUrl", () => {
 
   it("returns null with no bucket name even when public_url is set", () => {
     expect(
-      getBucketWebsiteBaseUrl("", mkConfig({ public_url: "https://web.ex.com" }))
+      getBucketWebsiteBaseUrl(
+        "",
+        mkConfig({ public_url: "https://{bucket}.web.ex.com" })
+      )
     ).toBeNull();
   });
 });
@@ -224,14 +230,14 @@ describe("getBucketWebsiteObjectUrl", () => {
     ).toBe("https://assets.web.ex.local/dashboard/homepage.svg");
   });
 
-  it("path style: encodes a nested key", () => {
+  it("returns null for a nested key when public_url has no {bucket} token", () => {
     expect(
       getBucketWebsiteObjectUrl(
         "assets",
         "dashboard/homepage.svg",
         mkConfig({ public_url: "https://web.ex.local" })
       )
-    ).toBe("https://web.ex.local/assets/dashboard/homepage.svg");
+    ).toBeNull();
   });
 
   it("percent-encodes spaces and parentheses in a key segment", () => {
@@ -342,5 +348,21 @@ describe("getPublicAccess", () => {
       state: "public",
       url: "https://assets.web.ex.local/dashboard/homepage.svg",
     });
+  });
+
+  // Garage's website endpoint is virtual-host only — it derives the bucket from
+  // the Host header. A template without {bucket} cannot address a bucket at all,
+  // so we must report "no usable URL" rather than emit one that 404s. Do not
+  // "restore" a path-style fallback here; it was measured against a live Garage
+  // and returns 404 every time.
+  it("is public-no-url when the public_url template has no {bucket} token", () => {
+    expect(
+      getPublicAccess(
+        true,
+        "assets",
+        "dashboard/homepage.svg",
+        mkConfig({ public_url: "https://web.ex.local" })
+      )
+    ).toEqual({ state: "public-no-url" });
   });
 });

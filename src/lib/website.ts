@@ -29,8 +29,9 @@ export function isWebsiteHostingConfigured(config?: Config): boolean {
  * Applies the operator-declared public base URL (S3_WEB_PUBLIC_URL, delivered
  * as config.s3_web.public_url) to a bucket name.
  *
- * Vhost style when the template contains "{bucket}", path style otherwise.
- * Returns null when no override is configured.
+ * The template must contain a "{bucket}" token. Returns null when no
+ * override is configured, or when the configured template has no "{bucket}"
+ * token to substitute.
  */
 function applyPublicUrlTemplate(
   bucketName: string,
@@ -41,7 +42,12 @@ function applyPublicUrlTemplate(
   if (template.includes("{bucket}")) {
     return template.split("{bucket}").join(bucketName);
   }
-  return `${template}/${bucketName}`;
+  // No {bucket} token means we cannot address the bucket at all. Garage's
+  // website endpoint resolves the bucket from the Host header only; a leading
+  // path segment is consumed by nothing and always 404s. Returning null makes
+  // getPublicAccess report "public-no-url", which tells the operator to fix
+  // their configuration instead of handing them a link that cannot work.
+  return null;
 }
 
 /**
