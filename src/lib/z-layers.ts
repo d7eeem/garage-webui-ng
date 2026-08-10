@@ -14,6 +14,9 @@ export const Z_LAYERS = {
   popover: 1100,
   tooltip: 1200,
   toast: 1300,
+  /** Persistent floating upload card. Below toasts so a transient message is
+   *  never hidden behind it; above dropdowns so it is not clipped by them. */
+  uploadCard: 1250,
 } as const;
 
 export type ZLayer = keyof typeof Z_LAYERS;
