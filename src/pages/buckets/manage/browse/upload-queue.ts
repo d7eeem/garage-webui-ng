@@ -1,6 +1,8 @@
 import { createStore, useStore } from "zustand";
 import mime from "mime/lite";
 import { apiUrl, csrfHeader, encodeObjectPath } from "@/lib/api";
+import { getPublicAccess } from "@/lib/website";
+import type { Config } from "@/types/garage";
 import { UploadItem } from "./types";
 
 /**
@@ -120,6 +122,26 @@ export const uploadFile = (args: UploadFileArgs): UploadHandle => {
 
   return { abort: () => xhr.abort() };
 };
+
+/**
+ * Permanent public URL for an already-uploaded item, or null when the item's
+ * bucket has no anonymous read (or no working public base URL).
+ *
+ * The upload panel renders items enqueued from *any* bucket, not just the
+ * one currently mounted — always built from `item.bucket`, never from a
+ * caller's own "current bucket" name, or a cross-bucket row would copy a
+ * URL into the wrong bucket's namespace. `websiteAccess` is still the
+ * caller's responsibility to supply for `item.bucket` specifically (this
+ * function does not — and cannot — look it up itself).
+ */
+export function getUploadItemPublicUrl(
+  item: Pick<UploadItem, "bucket" | "key">,
+  websiteAccess: boolean | undefined | null,
+  config?: Config
+): string | null {
+  const access = getPublicAccess(websiteAccess, item.bucket, item.key, config);
+  return access.state === "public" ? access.url : null;
+}
 
 type UploadQueueState = {
   items: UploadItem[];

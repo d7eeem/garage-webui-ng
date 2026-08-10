@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  getUploadItemPublicUrl,
   MAX_CONCURRENT_UPLOADS,
   resolveUploadContentType,
   uploadFile,
 } from "./upload-queue";
 import uploadQueue from "./upload-queue";
+import type { Config, S3Web } from "@/types/garage";
+
+const mkConfig = (s3_web?: Partial<S3Web>): Config =>
+  s3_web ? { s3_web: s3_web as S3Web } : {};
 
 /** Minimal fake XMLHttpRequest — no network is involved in any test here. */
 class FakeXhr {
@@ -103,6 +108,52 @@ describe("resolveUploadContentType", () => {
     expect(resolveUploadContentType("favicon.ico", "")).toBe(
       "application/octet-stream"
     );
+  });
+});
+
+describe("getUploadItemPublicUrl", () => {
+  const publicUrlConfig = mkConfig({
+    public_url: "https://{bucket}.web.ex.local",
+  });
+
+  it("builds the URL from item.bucket, not some other bucket name", () => {
+    const url = getUploadItemPublicUrl(
+      { bucket: "assets", key: "dashboard/homepage.svg" },
+      true,
+      publicUrlConfig
+    );
+    expect(url).toBe("https://assets.web.ex.local/dashboard/homepage.svg");
+  });
+
+  it("never builds from a different bucket than the item's own, even if one is passed nearby", () => {
+    // Regression guard for the cross-bucket bug: an item belonging to
+    // "other-bucket" must never produce a URL under "assets", no matter
+    // what bucket name a caller happens to have in scope elsewhere.
+    const url = getUploadItemPublicUrl(
+      { bucket: "other-bucket", key: "file.png" },
+      true,
+      publicUrlConfig
+    );
+    expect(url).toBe("https://other-bucket.web.ex.local/file.png");
+    expect(url).not.toContain("assets");
+  });
+
+  it("is null when the item's bucket has no anonymous read", () => {
+    const url = getUploadItemPublicUrl(
+      { bucket: "assets", key: "dashboard/homepage.svg" },
+      false,
+      publicUrlConfig
+    );
+    expect(url).toBeNull();
+  });
+
+  it("is null when anonymous read is on but no public URL can be built", () => {
+    const url = getUploadItemPublicUrl(
+      { bucket: "assets", key: "dashboard/homepage.svg" },
+      true,
+      undefined
+    );
+    expect(url).toBeNull();
   });
 });
 
