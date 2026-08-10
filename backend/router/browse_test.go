@@ -59,6 +59,32 @@ func TestNormalizeListLimit(t *testing.T) {
 	}
 }
 
+func TestMaxUploadBytes(t *testing.T) {
+	const mib = int64(1) << 20
+	tests := []struct {
+		name string
+		raw  string
+		want int64
+	}{
+		{name: "unset falls back to the default", raw: "", want: defaultMaxUploadBytes},
+		{name: "non-numeric falls back", raw: "abc", want: defaultMaxUploadBytes},
+		{name: "zero falls back rather than disabling the cap", raw: "0", want: defaultMaxUploadBytes},
+		{name: "negative falls back", raw: "-10", want: defaultMaxUploadBytes},
+		{name: "megabytes are converted to bytes", raw: "100", want: 100 * mib},
+		{name: "one megabyte", raw: "1", want: mib},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("MAX_UPLOAD_SIZE_MB", tt.raw)
+			got := maxUploadBytes()
+			if got != tt.want {
+				t.Errorf("maxUploadBytes() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 // makeObjectIdentifiers builds n distinct ObjectIdentifier values, keyed
 // "key-0", "key-1", ... "key-{n-1}", so ordering can be asserted.
 func makeObjectIdentifiers(n int) []types.ObjectIdentifier {

@@ -177,9 +177,39 @@ func (b *Browse) PutObject(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	isDirectory := strings.HasSuffix(key, "/")
 
+	// Reject before ParseMultipartForm buffers anything. Answering while the
+	// browser is still streaming is the only way it can read the status at all
+	// — once the handler returns without consuming the body, the server closes
+	// the connection and the browser reports an opaque network error instead.
+	limit := maxUploadBytes()
+	if r.ContentLength > limit {
+		utils.ResponseErrorStatus(w, fmt.Errorf(
+			"upload is too large: %d bytes exceeds the %d MB limit (raise MAX_UPLOAD_SIZE_MB, and any body-size limit on your reverse proxy)",
+			r.ContentLength, limit>>20,
+		), http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	// Belt to the Content-Length suspenders: a client that lies about or omits
+	// its length is still cut off at the ceiling, and MaxBytesReader makes the
+	// overflow surface as a read error from FormFile rather than as unbounded
+	// buffering.
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+
+	// Parse explicitly with a small memory budget. r.FormFile would otherwise
+	// call ParseMultipartForm(32 MiB), holding up to 32 MiB per concurrent
+	// upload in RAM; 4 MiB is enough for the form's non-file fields and pushes
+	// the payload to the temp directory, which the runtime image has.
+	if err := r.ParseMultipartForm(4 << 20); err != nil && !isDirectory {
+		drainRequestBody(r)
+		utils.ResponseError(w, fmt.Errorf("cannot read upload: %w", err))
+		return
+	}
+
 	file, headers, err := r.FormFile("file")
 	if err != nil && !isDirectory {
-		utils.ResponseError(w, err)
+		drainRequestBody(r)
+		utils.ResponseError(w, fmt.Errorf("cannot read uploaded file: %w", err))
 		return
 	}
 
@@ -189,6 +219,7 @@ func (b *Browse) PutObject(w http.ResponseWriter, r *http.Request) {
 
 	client, err := getS3Client(bucket)
 	if err != nil {
+		drainRequestBody(r)
 		utils.ResponseError(w, err)
 		return
 	}
@@ -210,6 +241,7 @@ func (b *Browse) PutObject(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil {
+		drainRequestBody(r)
 		utils.ResponseError(w, fmt.Errorf("cannot put object: %w", err))
 		return
 	}
@@ -488,6 +520,44 @@ func normalizeListLimit(raw string) int32 {
 		return maxListKeys
 	}
 	return int32(limit)
+}
+
+// defaultMaxUploadBytes caps a single browser upload. The whole body is
+// buffered by ParseMultipartForm before any of it reaches Garage, so this is a
+// real memory/disk commitment per concurrent upload, not a policy knob. 512 MiB
+// is generous for a browser form post; anything larger belongs in a multipart
+// S3 upload (deferred — D2b).
+const defaultMaxUploadBytes int64 = 512 << 20
+
+// maxUploadBytes returns the configured single-upload ceiling in bytes.
+//
+// MAX_UPLOAD_SIZE_MB is read as whole megabytes because that is the unit an
+// operator matches against their reverse proxy (nginx client_max_body_size,
+// Caddy request_body max_size). A missing, unparseable, zero or negative value
+// falls back to the default rather than disabling the limit: an accidental
+// typo must not turn the cap off.
+func maxUploadBytes() int64 {
+	raw := utils.GetEnv("MAX_UPLOAD_SIZE_MB", "")
+	mb, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || mb <= 0 {
+		return defaultMaxUploadBytes
+	}
+	return mb << 20
+}
+
+// drainRequestBody consumes and discards whatever is left of the request body.
+//
+// Go's HTTP server only auto-drains a small unread remainder before deciding to
+// close the connection. When a handler answers a large upload with an error and
+// returns, the socket is reset while the browser is still writing, and the
+// browser surfaces "NetworkError"/"Failed to fetch" instead of the status and
+// message the handler actually sent. Draining first lets the response through.
+// The read is already bounded by the MaxBytesReader installed in PutObject.
+func drainRequestBody(r *http.Request) {
+	if r.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, r.Body)
 }
 
 // chunkObjectIdentifiers splits keys into batches no larger than the
