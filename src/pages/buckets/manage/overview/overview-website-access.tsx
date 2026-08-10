@@ -78,7 +78,9 @@ const WebsiteAccessSection = () => {
   return (
     <div className="mt-8">
       <div className="flex flex-row items-center gap-2">
-        <p className="label label-text py-0 grow-0">Website Access</p>
+        <p className="label label-text py-0 grow-0">
+          Public read (website hosting)
+        </p>
         <Button
           href="https://garagehq.deuxfleurs.fr/documentation/cookbook/exposing-websites"
           target="_blank"
@@ -104,6 +106,12 @@ const WebsiteAccessSection = () => {
 
       {isEnabled && (
         <>
+          <p className="text-xs text-base-content/60 mt-1">
+            Anyone who can reach the Garage website endpoint can retrieve
+            objects in this bucket without signing in. Uploads and deletions
+            still require credentials.
+          </p>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <InputField
