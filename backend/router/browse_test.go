@@ -66,6 +66,40 @@ func TestNormalizeListLimit(t *testing.T) {
 	}
 }
 
+// TestIsInlineSafe pins the allowlist that decides whether a stored content
+// type may be rendered inline on the console's own origin. This is a security
+// boundary (see the comment on inlineSafeContentTypes in browse.go): anyone
+// with S3 write access to a bucket chooses an object's content type, so
+// HTML-ish types must always come back false, and a parse failure must fail
+// closed rather than open.
+func TestIsInlineSafe(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		want        bool
+	}{
+		{name: "png", contentType: "image/png", want: true},
+		{name: "plain text with charset param", contentType: "text/plain; charset=utf-8", want: true},
+		{name: "uppercase is normalised", contentType: "TEXT/PLAIN", want: true},
+		{name: "html is never inline-safe", contentType: "text/html", want: false},
+		{name: "svg is never inline-safe", contentType: "image/svg+xml", want: false},
+		{name: "xhtml is never inline-safe", contentType: "application/xhtml+xml", want: false},
+		{name: "javascript is never inline-safe", contentType: "application/javascript", want: false},
+		{name: "empty string fails closed", contentType: "", want: false},
+		{name: "malformed type fails closed", contentType: "not/a/valid/type", want: false},
+		{name: "generic octet-stream is not on the allowlist", contentType: "application/octet-stream", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isInlineSafe(tt.contentType)
+			if got != tt.want {
+				t.Errorf("isInlineSafe(%q) = %v, want %v", tt.contentType, got, tt.want)
+			}
+		})
+	}
+}
+
 // fakeAPIError is a minimal smithy.APIError implementation for exercising
 // isNotFoundErr against an error code the SDK's concrete s3/types package
 // does not model (e.g. "AccessDenied" has no matching struct there).

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/d7eeem/garage-webui-ng/middleware"
 	"github.com/d7eeem/garage-webui-ng/router"
 	"github.com/d7eeem/garage-webui-ng/store"
 	"github.com/d7eeem/garage-webui-ng/ui"
@@ -126,7 +127,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: sessionMgr.LoadAndSave(mux),
+		Handler: middleware.SecurityHeaders(sessionMgr.LoadAndSave(mux)),
 	}
 
 	// Run the server in the background so the main goroutine can wait for a
