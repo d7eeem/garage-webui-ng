@@ -105,11 +105,16 @@ const ShareDialog = () => {
           </Alert>
         )}
 
+        <p className="text-xs text-base-content/60 mb-1">
+          Access:{" "}
+          {publicAccess.state === "private" ? "Private" : "Public"}
+        </p>
+
         {publicAccess.state === "private" && (
           <Alert className="mb-4 items-start text-sm">
             <FileWarningIcon className="mt-1 shrink-0" />
             <span>
-              This bucket has no public read access, so it has no public URL.
+              No public URL — public access is off for this bucket.
               {config?.sharing ? " Private links above still work." : ""}
             </span>
           </Alert>

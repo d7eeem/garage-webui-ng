@@ -88,6 +88,14 @@ const UploadPanel = ({ bucketName }: Props) => {
               ? getUploadItemPublicUrl(item, bucket.websiteAccess, config)
               : null;
 
+          // Same mounted-bucket gate as publicUrl above: only known
+          // accurately for the currently mounted bucket, so a row from
+          // another bucket gets neither the button nor this label.
+          const isPrivate =
+            item.status === "done" &&
+            item.bucket === bucketName &&
+            publicUrl == null;
+
           return (
             <li
               key={item.id}
@@ -138,6 +146,9 @@ const UploadPanel = ({ bucketName }: Props) => {
                         aria-label={`Copy public URL for ${item.name}`}
                         onClick={() => copyToClipboard(publicUrl)}
                       />
+                    )}
+                    {isPrivate && (
+                      <span className="text-base-content/60">Private</span>
                     )}
                   </span>
                 )}

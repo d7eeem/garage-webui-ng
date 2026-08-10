@@ -1,7 +1,7 @@
 import { DeepPartial, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { websiteConfigSchema, WebsiteConfigSchema } from "../schema";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useDebounce } from "@/hooks/useDebounce";
 import { useObjectExists, useUpdateBucket } from "../hooks";
 import { useConfig } from "@/hooks/useConfig";
@@ -9,7 +9,7 @@ import { CircleXIcon, Copy, Info, LinkIcon } from "lucide-react";
 import { Alert } from "react-daisyui";
 import Button from "@/components/ui/button";
 import { InputField } from "@/components/ui/input";
-import { ToggleField } from "@/components/ui/toggle";
+import Toggle from "@/components/ui/toggle";
 import { useBucketContext } from "../context";
 import { useAuth } from "@/hooks/useAuth";
 import { copyToClipboard } from "@/lib/utils";
@@ -18,6 +18,7 @@ import {
   isWebsiteHostingConfigured,
 } from "@/lib/website";
 import SaveStatus from "./save-status";
+import PublicAccessConfirm from "./public-access-confirm";
 
 const WebsiteAccessSection = () => {
   const { canWrite } = useAuth();
@@ -31,6 +32,7 @@ const WebsiteAccessSection = () => {
   const websiteUrl = getBucketWebsiteBaseUrl(bucketName, config);
 
   const updateMutation = useUpdateBucket(data?.id);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   // Probe the PERSISTED config, not the live form values — the form value
   // changes on every keystroke, which would fire a request per character.
@@ -46,6 +48,9 @@ const WebsiteAccessSection = () => {
     data?.websiteAccess ? errorDoc : null
   );
 
+  // Debounced auto-save for the index/error document fields only.
+  // `websiteAccess` is driven explicitly (see the toggle's onChange below) —
+  // enabling requires confirmation, so it must never ride this path.
   const onChange = useDebounce((values: DeepPartial<WebsiteConfigSchema>) => {
     const data = {
       enabled: values.websiteAccess,
@@ -71,9 +76,49 @@ const WebsiteAccessSection = () => {
       },
     });
 
-    const { unsubscribe } = form.watch((values) => onChange(values));
+    // `name` is the field that changed. A `websiteAccess` change is handled
+    // explicitly by the toggle's onChange below (it needs a confirm step on
+    // enable, and must save immediately rather than after a 500ms debounce
+    // either way) — skip it here so it never double-saves or bypasses the
+    // confirmation.
+    const { unsubscribe } = form.watch((values, { name }) => {
+      if (name === "websiteAccess") return;
+      onChange(values);
+    });
     return unsubscribe;
   }, [data]);
+
+  const onToggleWebsiteAccess = (next: boolean) => {
+    if (next) {
+      // Enabling makes every object anonymously readable — require an
+      // explicit confirmation before touching form state or Garage. The
+      // toggle stays visually OFF (form value untouched) until confirmed.
+      setConfirmOpen(true);
+      return;
+    }
+
+    // Disabling is the safe direction: apply and save immediately, no
+    // confirmation, matching the plan's "disabling should be easy" design.
+    form.setValue("websiteAccess", false, { shouldDirty: true });
+    updateMutation.mutate({ websiteAccess: { enabled: false } });
+  };
+
+  const onConfirmEnable = () => {
+    form.setValue("websiteAccess", true, { shouldDirty: true });
+    const values = form.getValues();
+    updateMutation.mutate({
+      websiteAccess: {
+        enabled: true,
+        indexDocument: values.websiteConfig?.indexDocument,
+        errorDocument: values.websiteConfig?.errorDocument,
+      },
+    });
+    setConfirmOpen(false);
+  };
+
+  const onCancelEnable = () => {
+    setConfirmOpen(false);
+  };
 
   return (
     <div className="mt-8">
@@ -97,11 +142,19 @@ const WebsiteAccessSection = () => {
         />
       </div>
 
-      <ToggleField
-        form={form}
-        name="websiteAccess"
+      <Toggle
         label="Enabled"
         disabled={!canWrite}
+        color={isEnabled ? "primary" : undefined}
+        checked={!!isEnabled}
+        onChange={(e) => onToggleWebsiteAccess(e.target.checked)}
+      />
+
+      <PublicAccessConfirm
+        bucketName={bucketName}
+        isOpen={confirmOpen}
+        onCancel={onCancelEnable}
+        onConfirm={onConfirmEnable}
       />
 
       {isEnabled && (

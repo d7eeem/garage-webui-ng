@@ -237,6 +237,24 @@ There is no anonymous directory listing — Garage serves the configured index
 document for a prefix and the error document otherwise, never a listing of
 the bucket root.
 
+### Public access is opt-in
+
+Every new bucket is private. Nothing turns public read on implicitly — not the
+bucket's name, not a configured `S3_WEB_PUBLIC_URL` — and enabling it in the UI
+requires an explicit confirmation, since it makes every object in the bucket
+world-readable.
+
+- Public read maps to exactly one Garage setting, `websiteAccess`, which is
+  **bucket-level**. Garage has no per-object or per-prefix anonymous-read
+  control and no bucket-policy mechanism, so visibility cannot be scoped
+  narrower than the whole bucket.
+- Turning it off takes effect immediately; Garage then answers anonymous
+  requests at the website endpoint with a plain **404**, indistinguishable
+  from a missing object.
+- Presigned links (see [Importing / Exporting](#importing--exporting) above)
+  are the mechanism for sharing from a private bucket and work the same
+  either way.
+
 ### Command-line flags
 
 The binary is also its own recovery tool. These run offline against the user
