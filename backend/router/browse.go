@@ -138,6 +138,7 @@ func (b *Browse) GetOneObject(w http.ResponseWriter, r *http.Request) {
 	keys := strings.Split(key, "/")
 
 	if download {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Disposition", contentDispositionAttachment(keys[len(keys)-1]))
 	} else if thumbnail {
 		body, err := io.ReadAll(object.Body)
@@ -153,7 +154,8 @@ func (b *Browse) GetOneObject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Type", "image/jpeg")
 		w.Write(thumb)
 		return
 	}
@@ -161,11 +163,27 @@ func (b *Browse) GetOneObject(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "max-age=86400")
 	w.Header().Set("Last-Modified", object.LastModified.Format(time.RFC1123))
 
+	stored := ""
 	if object.ContentType != nil {
-		w.Header().Set("Content-Type", *object.ContentType)
-	} else {
-		w.Header().Set("Content-Type", "application/octet-stream")
+		stored = *object.ContentType
 	}
+
+	// Always: never let the browser second-guess the type we send.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	if isInlineSafe(stored) {
+		w.Header().Set("Content-Type", stored)
+	} else {
+		// Unknown or scriptable: hand it to the user as a file rather than
+		// rendering it on this origin.
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", contentDispositionAttachment(keys[len(keys)-1]))
+	}
+
+	// Defence in depth: even a type on the allowlist is served with an empty
+	// origin and no script execution, so a mislabelled body cannot act.
+	w.Header().Set("Content-Security-Policy", "sandbox")
+
 	if object.ContentLength != nil {
 		w.Header().Set("Content-Length", strconv.FormatInt(*object.ContentLength, 10))
 	}
@@ -889,6 +907,44 @@ func contentDispositionAttachment(filename string) string {
 	// FormatMediaType rejects values that are not valid UTF-8. Fall back to a
 	// percent-encoded RFC 5987 parameter.
 	return "attachment; filename*=UTF-8''" + url.PathEscape(filename)
+}
+
+// inlineSafeContentTypes are the only stored content types we will let a
+// browser render in place on this application's own origin.
+//
+// Everything else is served as an attachment, because an object body is
+// caller-controlled data: anyone with S3 write access to a bucket chooses its
+// content type, and an HTML-ish type rendered here would execute script inside
+// the console's origin — able to drive authenticated API calls and read the
+// deliberately non-HttpOnly csrf_token cookie. Note SVG is NOT here: it is an
+// XML document that can carry <script>.
+var inlineSafeContentTypes = map[string]bool{
+	"image/png":                true,
+	"image/jpeg":               true,
+	"image/gif":                true,
+	"image/webp":               true,
+	"image/avif":               true,
+	"image/bmp":                true,
+	"image/x-icon":             true,
+	"image/vnd.microsoft.icon": true,
+	"text/plain":               true,
+	"application/pdf":          true,
+	"video/mp4":                true,
+	"video/webm":               true,
+	"audio/mpeg":               true,
+	"audio/ogg":                true,
+	"audio/wav":                true,
+}
+
+// isInlineSafe reports whether a stored content type may be rendered inline.
+// Parameters (charset, boundary) are stripped and case normalised, so
+// "TEXT/PLAIN; charset=utf-8" matches. A parse error returns false — fail closed.
+func isInlineSafe(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	return inlineSafeContentTypes[strings.ToLower(mediaType)]
 }
 
 func getBucketCredentials(bucket string) (aws.CredentialsProvider, error) {

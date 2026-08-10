@@ -314,6 +314,7 @@ two cannot drift.
 - **Lockout guards** — the last enabled administrator cannot be deleted, disabled or demoted, and no admin can demote or delete themselves.
 - **Audit trail** — mutating requests (incl. denied ones) are logged as structured JSON to stdout for your log pipeline.
 - **Hardened runtime** — the Docker image runs as a non-root user with a minimal (distroless) base and no shell.
+- **Response hardening** — every response carries `X-Content-Type-Options: nosniff`, a strict `Content-Security-Policy`, `X-Frame-Options: DENY`/`frame-ancestors 'none'`, and `Referrer-Policy: no-referrer`. Object bodies are served as attachments unless their stored content type is on a small inline-safe allowlist (common image/audio/video/PDF/plain-text types), and even an allowlisted type is served under its own stricter `Content-Security-Policy: sandbox` — an object's content type is chosen by whoever has S3 write access to the bucket, not by this app, so it is never trusted to render on the console's own origin. Note `image/svg+xml` is deliberately **not** inline-safe: an SVG is an XML document that can carry `<script>`.
 
 > Even with authentication mandatory, the backend still proxies the Garage admin token on behalf of a signed-in user. Keep the UI on a trusted network or behind a reverse proxy with TLS (and set `SESSION_COOKIE_SECURE=true`) when exposing it beyond localhost.
 
