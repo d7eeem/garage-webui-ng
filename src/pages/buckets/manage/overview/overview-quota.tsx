@@ -8,6 +8,7 @@ import { InputField } from "@/components/ui/input";
 import { ToggleField } from "@/components/ui/toggle";
 import { useBucketContext } from "../context";
 import { useAuth } from "@/hooks/useAuth";
+import SaveStatus from "./save-status";
 
 const QuotaSection = () => {
   const { canWrite } = useAuth();
@@ -47,13 +48,20 @@ const QuotaSection = () => {
 
   return (
     <div className="mt-8">
-      <ToggleField
-        form={form}
-        name="enabled"
-        title="Quotas"
-        label="Enabled"
-        disabled={!canWrite}
-      />
+      <div className="flex flex-row items-center gap-2">
+        <ToggleField
+          form={form}
+          name="enabled"
+          title="Quotas"
+          label="Enabled"
+          disabled={!canWrite}
+        />
+        <SaveStatus
+          isPending={updateMutation.isPending}
+          isSuccess={updateMutation.isSuccess}
+          isError={updateMutation.isError}
+        />
+      </div>
 
       {isEnabled && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

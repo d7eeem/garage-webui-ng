@@ -107,6 +107,10 @@ func (b *Browse) GetOneObject(w http.ResponseWriter, r *http.Request) {
 			Key:    aws.String(key),
 		})
 		if err != nil {
+			if isNotFoundErr(err) {
+				utils.ResponseErrorStatus(w, err, http.StatusNotFound)
+				return
+			}
 			utils.ResponseError(w, err)
 			return
 		}
@@ -752,6 +756,24 @@ func normalizeListLimit(raw string) int32 {
 		return maxListKeys
 	}
 	return int32(limit)
+}
+
+// isNotFoundErr reports whether an S3 error means "this object does not exist".
+//
+// The two codes are NOT interchangeable. GetObject returns NoSuchKey with an
+// XML error document; HEAD has no response body, so aws-sdk-go-v2 synthesizes
+// NotFound instead. A caller that matches only one of them silently misses the
+// other — which is why the HEAD branch used to answer 500 for a missing object.
+func isNotFoundErr(err error) bool {
+	var ae smithy.APIError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	switch ae.ErrorCode() {
+	case "NotFound", "NoSuchKey":
+		return true
+	}
+	return false
 }
 
 // defaultMaxUploadBytes caps a single browser upload. The whole body is

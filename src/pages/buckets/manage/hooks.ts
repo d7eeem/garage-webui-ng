@@ -1,4 +1,4 @@
-import api from "@/lib/api";
+import api, { APIError, encodeObjectPath } from "@/lib/api";
 import {
   MutationOptions,
   useMutation,
@@ -6,6 +6,7 @@ import {
   useQuery,
 } from "@tanstack/react-query";
 import { Bucket, Permissions } from "../types";
+import { handleError } from "@/lib/utils";
 
 export const useMultipartUploads = (bucketName: string) => {
   return useQuery({
@@ -39,7 +40,10 @@ export const useBucket = (id?: string | null) => {
   });
 };
 
-export const useUpdateBucket = (id?: string | null) => {
+export const useUpdateBucket = (
+  id?: string | null,
+  options?: UseMutationOptions<any, Error, any>
+) => {
   return useMutation({
     mutationFn: (values: any) => {
       return api.post<any>("/v2/UpdateBucket", {
@@ -47,7 +51,56 @@ export const useUpdateBucket = (id?: string | null) => {
         body: values,
       });
     },
+    // These forms auto-save on change with no Save button, so a rejected
+    // request has nothing to report it. Without this default the mutation
+    // rejects silently and the form keeps showing a value the server never
+    // accepted. `...options` is spread last so a caller can still override.
+    onError: handleError,
+    ...options,
   });
+};
+
+/** What we can say about a configured document after probing for it. */
+export type ObjectPresence = "present" | "missing" | "unknown";
+
+/**
+ * Classifies the outcome of a HEAD probe.
+ *
+ * Only a 404 proves absence. Every other failure — most importantly the 500 a
+ * bucket with no read+write key produces — means we could not tell, and the UI
+ * must stay silent rather than accuse the user of a missing file.
+ */
+export const classifyObjectProbe = (
+  isSuccess: boolean,
+  error: unknown
+): ObjectPresence => {
+  if (isSuccess) return "present";
+  if (error && (error as APIError).status === 404) return "missing";
+  return "unknown";
+};
+
+/**
+ * Probes whether `key` exists in `bucketName`. A GET to /browse/{bucket}/{key}
+ * with no view/dl/thumb parameter performs a HeadObject server-side.
+ *
+ * `bucketName` is the bucket's GLOBAL ALIAS, not its id — every /browse route
+ * resolves credentials via GetBucketInfo?globalAlias=.
+ */
+export const useObjectExists = (bucketName: string, key?: string | null) => {
+  const query = useQuery({
+    queryKey: ["object-exists", bucketName, key],
+    queryFn: () => api.get(`/browse/${bucketName}/${encodeObjectPath(key!)}`),
+    enabled: !!bucketName && !!key,
+    // A 404 is the answer, not a transient failure worth retrying.
+    retry: false,
+  });
+
+  return {
+    presence: query.isLoading
+      ? ("unknown" as ObjectPresence)
+      : classifyObjectProbe(query.isSuccess, query.error),
+    isLoading: query.isLoading,
+  };
 };
 
 export const useAddAlias = (
