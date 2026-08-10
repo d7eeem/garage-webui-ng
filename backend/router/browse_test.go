@@ -125,6 +125,39 @@ func TestMaxUploadBytes(t *testing.T) {
 	}
 }
 
+// TestResolveUploadContentType exercises the extension-based fallback added
+// because a browser leaves a multipart part's Content-Type empty (serialized
+// as "" or the generic "application/octet-stream") whenever File.type is
+// empty — which happens for any extension the OS's local mime database does
+// not know. The frontend's `mime/lite` has the same gap for .ico specifically
+// (verified separately), which is why this is resolved server-side instead.
+func TestResolveUploadContentType(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		key         string
+		want        string
+	}{
+		{name: "empty content-type resolves svg", contentType: "", key: "dashboard/homepage.svg", want: "image/svg+xml"},
+		{name: "generic octet-stream resolves webp", contentType: "application/octet-stream", key: "photo.webp", want: "image/webp"},
+		{name: "empty content-type resolves avif", contentType: "", key: "photo.avif", want: "image/avif"},
+		{name: "empty content-type resolves ico", contentType: "", key: "favicon.ico", want: "image/vnd.microsoft.icon"},
+		{name: "empty content-type resolves png", contentType: "", key: "logo.png", want: "image/png"},
+		{name: "unresolvable extension keeps the incoming generic type", contentType: "application/octet-stream", key: "data.unknownext", want: "application/octet-stream"},
+		{name: "unresolvable extension keeps an empty incoming type as empty", contentType: "", key: "data.unknownext", want: ""},
+		{name: "non-empty, non-generic content-type is preserved unchanged", contentType: "text/x-custom", key: "file.svg", want: "text/x-custom"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveUploadContentType(tt.contentType, tt.key)
+			if got != tt.want {
+				t.Errorf("resolveUploadContentType(%q, %q) = %q, want %q", tt.contentType, tt.key, got, tt.want)
+			}
+		})
+	}
+}
+
 // makeObjectIdentifiers builds n distinct ObjectIdentifier values, keyed
 // "key-0", "key-1", ... "key-{n-1}", so ordering can be asserted.
 func makeObjectIdentifiers(n int) []types.ObjectIdentifier {

@@ -1,6 +1,34 @@
 import { createStore, useStore } from "zustand";
+import mime from "mime/lite";
 import { apiUrl, csrfHeader, encodeObjectPath } from "@/lib/api";
 import { UploadItem } from "./types";
+
+/**
+ * Resolves the Content-Type an upload should be sent with.
+ *
+ * A browser derives the multipart part's Content-Type from `File.type`,
+ * which is the empty string for any extension the OS's local mime database
+ * does not know — a frequent gap for `.svg`, `.webp`, `.avif` and `.ico`,
+ * meaning those files were previously uploaded (and served back) with no
+ * usable type. A non-empty `fileType` — what the browser already knows — is
+ * always preserved unchanged; only an empty one falls back to a lookup by
+ * filename extension via `mime/lite` (already a dependency; `object-list.tsx`
+ * uses the same module for icon/thumbnail selection).
+ *
+ * `mime/lite` itself does not resolve `.ico` (returns null), so a `.ico`
+ * upload still falls through to `application/octet-stream` here. That gap is
+ * closed authoritatively server-side: `resolveUploadContentType` in
+ * `backend/router/browse.go` re-resolves from the object key's extension via
+ * Go's stdlib `mime.TypeByExtension`, which does cover `.ico`, whenever the
+ * incoming Content-Type is empty or the generic `application/octet-stream`.
+ */
+export function resolveUploadContentType(
+  fileName: string,
+  fileType: string
+): string {
+  if (fileType) return fileType;
+  return mime.getType(fileName) ?? "application/octet-stream";
+}
 
 /** How many uploads run at once. */
 export const MAX_CONCURRENT_UPLOADS = 3;
@@ -37,7 +65,12 @@ export const uploadFile = (args: UploadFileArgs): UploadHandle => {
   const url = apiUrl(`/browse/${bucket}/${encodeObjectPath(key)}`);
 
   const form = new FormData();
-  form.append("file", file);
+  const contentType = resolveUploadContentType(file.name, file.type);
+  const uploadable =
+    contentType === file.type
+      ? file
+      : new File([file], file.name, { type: contentType });
+  form.append("file", uploadable);
 
   xhr.open("PUT", url, true);
   xhr.withCredentials = true;

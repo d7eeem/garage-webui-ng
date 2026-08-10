@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_CONCURRENT_UPLOADS, uploadFile } from "./upload-queue";
+import {
+  MAX_CONCURRENT_UPLOADS,
+  resolveUploadContentType,
+  uploadFile,
+} from "./upload-queue";
 import uploadQueue from "./upload-queue";
 
 /** Minimal fake XMLHttpRequest — no network is involved in any test here. */
@@ -40,6 +44,67 @@ const makeFile = (name: string, size = 100) => {
   const file = new File([new Uint8Array(size)], name);
   return file;
 };
+
+describe("resolveUploadContentType", () => {
+  it("preserves a non-empty fileType unchanged", () => {
+    expect(resolveUploadContentType("photo.svg", "text/x-custom")).toBe(
+      "text/x-custom"
+    );
+  });
+
+  it("resolves .svg", () => {
+    expect(resolveUploadContentType("homepage.svg", "")).toBe(
+      "image/svg+xml"
+    );
+  });
+
+  it("resolves .png", () => {
+    expect(resolveUploadContentType("logo.png", "")).toBe("image/png");
+  });
+
+  it("resolves .jpg", () => {
+    expect(resolveUploadContentType("photo.jpg", "")).toBe("image/jpeg");
+  });
+
+  it("resolves .jpeg", () => {
+    expect(resolveUploadContentType("photo.jpeg", "")).toBe("image/jpeg");
+  });
+
+  it("resolves .webp", () => {
+    expect(resolveUploadContentType("photo.webp", "")).toBe("image/webp");
+  });
+
+  it("resolves .gif", () => {
+    expect(resolveUploadContentType("anim.gif", "")).toBe("image/gif");
+  });
+
+  it("resolves .css", () => {
+    expect(resolveUploadContentType("styles.css", "")).toBe("text/css");
+  });
+
+  it("resolves .js", () => {
+    expect(resolveUploadContentType("script.js", "")).toBe(
+      "text/javascript"
+    );
+  });
+
+  it("falls back to application/octet-stream for an unknown extension", () => {
+    expect(resolveUploadContentType("data.unknownext", "")).toBe(
+      "application/octet-stream"
+    );
+  });
+
+  // mime/lite does not resolve .ico (unlike the full `mime` package); that
+  // gap is closed authoritatively server-side by
+  // resolveUploadContentType/mime.TypeByExtension in backend/router/browse.go,
+  // which does cover .ico. This test documents the frontend-side fallback
+  // rather than asserting a false "correct" mime type for .ico here.
+  it("falls back to application/octet-stream for .ico (closed server-side)", () => {
+    expect(resolveUploadContentType("favicon.ico", "")).toBe(
+      "application/octet-stream"
+    );
+  });
+});
 
 describe("uploadFile", () => {
   beforeEach(() => {

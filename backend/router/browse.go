@@ -181,6 +181,24 @@ func (b *Browse) GetOneObject(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// resolveUploadContentType recovers a meaningful Content-Type from the
+// object key's extension when the browser's multipart part carried none —
+// either empty or the generic "application/octet-stream" default, which is
+// what a browser sends when File.type is empty. File.type is empty for any
+// extension the OS's local mime database does not know, a common gap for
+// .svg, .webp, .avif and .ico (frontend's `mime/lite` has the same gap for
+// .ico, which is why this is resolved server-side with the Go stdlib's
+// mime.TypeByExtension instead). A non-empty, non-generic contentType from
+// the browser is preserved unchanged.
+func resolveUploadContentType(contentType, key string) string {
+	if contentType == "" || contentType == "application/octet-stream" {
+		if guessed := mime.TypeByExtension(path.Ext(key)); guessed != "" {
+			return guessed
+		}
+	}
+	return contentType
+}
+
 func (b *Browse) PutObject(w http.ResponseWriter, r *http.Request) {
 	bucket := r.PathValue("bucket")
 	key := r.PathValue("key")
@@ -240,6 +258,8 @@ func (b *Browse) PutObject(w http.ResponseWriter, r *http.Request) {
 		contentType = headers.Header.Get("Content-Type")
 		size = headers.Size
 	}
+
+	contentType = resolveUploadContentType(contentType, key)
 
 	result, err := client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:        aws.String(bucket),
