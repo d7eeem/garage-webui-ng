@@ -1,13 +1,14 @@
 import { Dispatch, SetStateAction, useState } from "react";
 import { Alert, Modal } from "react-daisyui";
-import { CircleAlertIcon, Trash2 } from "lucide-react";
+import { CircleAlertIcon, Download, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 
 import Button from "@/components/ui/button";
 import { useDisclosure } from "@/hooks/useDisclosure";
 import { handleError } from "@/lib/utils";
-import { useBulkDelete } from "./hooks";
+import { API_URL } from "@/lib/api";
+import { useBulkDelete, useDownloadToken } from "./hooks";
 import { BulkDeleteResult } from "./types";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -73,13 +74,47 @@ const BulkActions = ({ bucketName, selected, setSelected }: Props) => {
 
   const total = result ? result.deleted + result.errors.length : 0;
 
+  // Minting a token is a normal (CSRF-guarded) API call via `api`, but the
+  // archive itself has to be fetched as a plain navigation — a native
+  // download can't send a CSRF header, and buffering the response body into
+  // memory before saving it would be a tab-killer on a large selection. The
+  // two-step token dance keeps memory use constant and preserves a native,
+  // resumable browser download.
+  const downloadToken = useDownloadToken(bucketName, {
+    onSuccess: (data) => {
+      window.location.href =
+        API_URL +
+        "/browse/" +
+        encodeURIComponent(bucketName) +
+        "/archive?token=" +
+        encodeURIComponent(data.token);
+    },
+    onError: handleError,
+  });
+
+  const onDownloadSelected = () => {
+    downloadToken.mutate(selectedKeys);
+  };
+
   return (
     <div className="flex flex-row items-center justify-between gap-2 mx-2 mb-2 px-3 py-2 bg-base-200 rounded-lg">
       <span className="text-sm font-medium">
         {selected.size} object{selected.size === 1 ? "" : "s"} selected
       </span>
 
-      {canWrite && (
+      <div className="flex flex-row items-center gap-2">
+        {/* Visible to everyone, including a read-only viewer — downloading is
+            a read, unlike delete below which is gated on canWrite. */}
+        <Button
+          icon={Download}
+          size="sm"
+          onClick={onDownloadSelected}
+          disabled={downloadToken.isPending}
+        >
+          {downloadToken.isPending ? "Preparing…" : "Download selected"}
+        </Button>
+
+        {canWrite && (
         <>
           <Button icon={Trash2} color="error" size="sm" onClick={onOpen}>
             Delete selected
@@ -156,7 +191,8 @@ const BulkActions = ({ bucketName, selected, setSelected }: Props) => {
             </Modal.Actions>
           </Modal>
         </>
-      )}
+        )}
+      </div>
     </div>
   );
 };

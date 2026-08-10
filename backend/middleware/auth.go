@@ -38,8 +38,15 @@ func isViewerAllowed(r *http.Request) bool {
 	}
 	// A read-only viewer may still end their session and change their OWN
 	// password. Nothing else that mutates state is permitted.
+	//
+	// Downloading is a read. The archive endpoint is a GET (already allowed);
+	// the token that authorises it is minted with a POST purely because the key
+	// list is too large for a URL. It mutates nothing, so a read-only viewer
+	// may call it. Exact match only — this must never become a prefix.
 	if r.Method == http.MethodPost {
-		return r.URL.Path == "/auth/logout" || r.URL.Path == "/auth/change-password"
+		return r.URL.Path == "/auth/logout" ||
+			r.URL.Path == "/auth/change-password" ||
+			r.URL.Path == "/browse/download-token"
 	}
 	return false
 }

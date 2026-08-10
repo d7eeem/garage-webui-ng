@@ -1,6 +1,8 @@
 package router
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"mime"
@@ -8,6 +10,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/d7eeem/garage-webui-ng/schema"
+	"github.com/d7eeem/garage-webui-ng/utils"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -387,5 +392,341 @@ func TestContentDispositionAttachment(t *testing.T) {
 		if got == "" || !strings.HasPrefix(got, "attachment") {
 			t.Errorf("contentDispositionAttachment(%q) = %q, want a non-empty value starting with %q", in, got, "attachment")
 		}
+	})
+}
+
+// TestArchiveRouteWinsOverWildcard guards the route-collision hazard called
+// out in plan 031: GET /browse/{bucket}/{key...} is a wildcard that would
+// otherwise swallow GET /browse/{bucket}/archive. Go 1.22's ServeMux prefers
+// the more specific pattern regardless of registration order, but this test
+// pins that behavior against the real patterns rather than relying on it
+// silently.
+func TestArchiveRouteWinsOverWildcard(t *testing.T) {
+	mux := http.NewServeMux()
+	var hitArchive, hitWildcard bool
+	mux.HandleFunc("GET /browse/{bucket}/archive", func(w http.ResponseWriter, r *http.Request) {
+		hitArchive = true
+	})
+	mux.HandleFunc("GET /browse/{bucket}/{key...}", func(w http.ResponseWriter, r *http.Request) {
+		hitWildcard = true
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/browse/b/archive", nil)
+	mux.ServeHTTP(httptest.NewRecorder(), req)
+
+	if !hitArchive || hitWildcard {
+		t.Errorf("GET /browse/b/archive: hitArchive=%v hitWildcard=%v, want the archive route to win", hitArchive, hitWildcard)
+	}
+}
+
+// TestStripCommonKeyPrefix pins the entry-naming contract for the archive:
+// a common leading directory shared by every selected key is stripped so the
+// zip doesn't repeat it in every entry name, but keys that diverge earlier
+// keep their distinguishing path so entries never collide.
+func TestStripCommonKeyPrefix(t *testing.T) {
+	t.Run("shared directory is stripped", func(t *testing.T) {
+		got := stripCommonKeyPrefix([]string{"p/q/a.txt", "p/q/b.txt"})
+		want := map[string]string{"p/q/a.txt": "a.txt", "p/q/b.txt": "b.txt"}
+		if len(got) != len(want) || got["p/q/a.txt"] != "a.txt" || got["p/q/b.txt"] != "b.txt" {
+			t.Errorf("stripCommonKeyPrefix(...) = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("keys with no shared directory are left alone", func(t *testing.T) {
+		got := stripCommonKeyPrefix([]string{"a/x.txt", "b/y.txt"})
+		if got["a/x.txt"] != "a/x.txt" || got["b/y.txt"] != "b/y.txt" {
+			t.Errorf("stripCommonKeyPrefix(...) = %v, want keys unchanged", got)
+		}
+	})
+
+	t.Run("a single key is reduced to its base name", func(t *testing.T) {
+		got := stripCommonKeyPrefix([]string{"p/q/a.txt"})
+		if got["p/q/a.txt"] != "a.txt" {
+			t.Errorf("stripCommonKeyPrefix(...) = %v, want a.txt", got)
+		}
+	})
+
+	t.Run("partial shared prefix only strips the common directory", func(t *testing.T) {
+		got := stripCommonKeyPrefix([]string{"p/q/a.txt", "p/r/b.txt"})
+		if got["p/q/a.txt"] != "q/a.txt" || got["p/r/b.txt"] != "r/b.txt" {
+			t.Errorf("stripCommonKeyPrefix(...) = %v, want the deeper directories preserved", got)
+		}
+	})
+}
+
+// withDownloadSession seeds an authenticated session (username only — this
+// package's handlers under test don't consult "authenticated"/"role") inside
+// the scs middleware, then runs fn with a request sharing that context, so fn
+// can call Browse's handler methods directly and see the same
+// utils.Session.Get("username") the handler reads. Mirrors the pattern in
+// TestAuthMiddlewareAdminAPIIsAdminOnly (backend/middleware/auth_test.go).
+func withDownloadSession(t *testing.T, username string, fn func(r *http.Request)) {
+	t.Helper()
+	sessMgr := utils.InitSessionManager()
+	handler := sessMgr.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		utils.Session.Set(r, "username", username)
+		fn(r)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+}
+
+// mintDownloadToken calls CreateDownloadToken directly (sharing r's session
+// context) and returns the minted token, failing the test if minting itself
+// didn't succeed.
+func mintDownloadToken(t *testing.T, r *http.Request, bucket string, keys []string) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"bucket": bucket, "keys": keys})
+	if err != nil {
+		t.Fatalf("cannot marshal mint request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/browse/download-token", bytes.NewReader(body)).WithContext(r.Context())
+	rec := httptest.NewRecorder()
+	(&Browse{}).CreateDownloadToken(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mintDownloadToken: status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("mintDownloadToken: cannot decode response %q: %v", rec.Body.String(), err)
+	}
+	return out.Token
+}
+
+// requestArchive calls DownloadArchive directly (sharing r's session
+// context) for the given bucket/token and returns the recorder.
+func requestArchive(r *http.Request, bucket, token string) *httptest.ResponseRecorder {
+	target := "/browse/" + bucket + "/archive"
+	if token != "" {
+		target += "?token=" + token
+	}
+	req := httptest.NewRequest(http.MethodGet, target, nil).WithContext(r.Context())
+	req.SetPathValue("bucket", bucket)
+	rec := httptest.NewRecorder()
+	(&Browse{}).DownloadArchive(rec, req)
+	return rec
+}
+
+func TestCreateDownloadToken(t *testing.T) {
+	t.Run("no keys is rejected", func(t *testing.T) {
+		utils.InitCacheManager()
+		withDownloadSession(t, "alice", func(r *http.Request) {
+			body, _ := json.Marshal(map[string]any{"bucket": "b", "keys": []string{}})
+			req := httptest.NewRequest(http.MethodPost, "/browse/download-token", bytes.NewReader(body)).WithContext(r.Context())
+			rec := httptest.NewRecorder()
+			(&Browse{}).CreateDownloadToken(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", rec.Code)
+			}
+		})
+	})
+
+	t.Run("missing bucket is rejected", func(t *testing.T) {
+		utils.InitCacheManager()
+		withDownloadSession(t, "alice", func(r *http.Request) {
+			body, _ := json.Marshal(map[string]any{"bucket": "", "keys": []string{"a"}})
+			req := httptest.NewRequest(http.MethodPost, "/browse/download-token", bytes.NewReader(body)).WithContext(r.Context())
+			rec := httptest.NewRecorder()
+			(&Browse{}).CreateDownloadToken(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", rec.Code)
+			}
+		})
+	})
+
+	t.Run("too many keys is rejected", func(t *testing.T) {
+		utils.InitCacheManager()
+		withDownloadSession(t, "alice", func(r *http.Request) {
+			keys := make([]string, maxListKeys+1)
+			for i := range keys {
+				keys[i] = fmt.Sprintf("key-%d", i)
+			}
+			body, _ := json.Marshal(map[string]any{"bucket": "b", "keys": keys})
+			req := httptest.NewRequest(http.MethodPost, "/browse/download-token", bytes.NewReader(body)).WithContext(r.Context())
+			rec := httptest.NewRecorder()
+			(&Browse{}).CreateDownloadToken(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", rec.Code)
+			}
+		})
+	})
+
+	t.Run("valid request mints a non-empty token", func(t *testing.T) {
+		utils.InitCacheManager()
+		withDownloadSession(t, "alice", func(r *http.Request) {
+			token := mintDownloadToken(t, r, "b", []string{"a.txt"})
+			if token == "" {
+				t.Error("token is empty, want non-empty")
+			}
+		})
+	})
+}
+
+// TestDownloadArchive covers the security-critical contract of the archive
+// endpoint: a token only authorises the bucket and user it was minted for,
+// and can only ever be used once. Only the final subtest needs a real (mock)
+// S3 backend — everything else is rejected before the handler ever calls
+// getS3Client.
+func TestDownloadArchive(t *testing.T) {
+	t.Run("missing token is rejected", func(t *testing.T) {
+		utils.InitCacheManager()
+		withDownloadSession(t, "alice", func(r *http.Request) {
+			rec := requestArchive(r, "b", "")
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", rec.Code)
+			}
+		})
+	})
+
+	t.Run("unknown token is not found", func(t *testing.T) {
+		utils.InitCacheManager()
+		withDownloadSession(t, "alice", func(r *http.Request) {
+			rec := requestArchive(r, "b", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd")
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("status = %d, want 404", rec.Code)
+			}
+		})
+	})
+
+	t.Run("token minted for a different bucket is forbidden", func(t *testing.T) {
+		utils.InitCacheManager()
+		withDownloadSession(t, "alice", func(r *http.Request) {
+			token := mintDownloadToken(t, r, "bucket-a", []string{"x.txt"})
+			rec := requestArchive(r, "bucket-b", token)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want 403", rec.Code)
+			}
+		})
+	})
+
+	t.Run("token minted by a different user is forbidden", func(t *testing.T) {
+		utils.InitCacheManager()
+
+		var token string
+		withDownloadSession(t, "alice", func(r *http.Request) {
+			token = mintDownloadToken(t, r, "bucket-a", []string{"x.txt"})
+		})
+
+		withDownloadSession(t, "mallory", func(r *http.Request) {
+			rec := requestArchive(r, "bucket-a", token)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want 403", rec.Code)
+			}
+		})
+	})
+
+	t.Run("a used token cannot be replayed", func(t *testing.T) {
+		utils.InitCacheManager()
+		withDownloadSession(t, "alice", func(r *http.Request) {
+			token := mintDownloadToken(t, r, "bucket-a", []string{"x.txt"})
+
+			// The first use is deliberately a bucket mismatch, so this test
+			// needs no S3 fixture — the point being pinned is that the token
+			// is consumed on the first successful cache lookup, before the
+			// bucket/user check even runs.
+			first := requestArchive(r, "bucket-mismatch", token)
+			if first.Code != http.StatusForbidden {
+				t.Fatalf("first use: status = %d, want 403", first.Code)
+			}
+
+			second := requestArchive(r, "bucket-mismatch", token)
+			if second.Code != http.StatusNotFound {
+				t.Errorf("replay: status = %d, want 404 (token must be single-use)", second.Code)
+			}
+		})
+	})
+
+	t.Run("success streams a zip with common-prefix-stripped entries and the right headers", func(t *testing.T) {
+		utils.InitCacheManager()
+
+		const bucket = "archive-success-bucket"
+		const accessKeyID = "AKIATESTARCHIVE"
+
+		// Mock admin API: getBucketCredentials calls GetBucketInfo, then
+		// GetKeyInfo for the first read+write key it finds.
+		adminServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.HasPrefix(r.URL.Path, "/v2/GetBucketInfo"):
+				_ = json.NewEncoder(w).Encode(schema.Bucket{
+					Keys: []schema.KeyElement{
+						{
+							AccessKeyID: accessKeyID,
+							Permissions: schema.Permissions{Read: true, Write: true},
+						},
+					},
+				})
+			case strings.HasPrefix(r.URL.Path, "/v2/GetKeyInfo"):
+				_ = json.NewEncoder(w).Encode(schema.KeyElement{
+					AccessKeyID:     accessKeyID,
+					SecretAccessKey: "test-secret",
+				})
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer adminServer.Close()
+
+		// Mock S3 API (path-style): serves fixed content for the two keys the
+		// test selects, keyed on everything after the leading /{bucket}/.
+		objects := map[string]string{
+			"p/q/a.txt": "content-a",
+			"p/q/b.txt": "content-b",
+		}
+		s3Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 2)
+			if len(parts) != 2 {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			content, ok := objects[parts[1]]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write([]byte(content))
+		}))
+		defer s3Server.Close()
+
+		t.Setenv("API_BASE_URL", adminServer.URL)
+		t.Setenv("S3_ENDPOINT_URL", s3Server.URL)
+
+		withDownloadSession(t, "alice", func(r *http.Request) {
+			token := mintDownloadToken(t, r, bucket, []string{"p/q/a.txt", "p/q/b.txt"})
+			rec := requestArchive(r, bucket, token)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/zip" {
+				t.Errorf("Content-Type = %q, want %q", ct, "application/zip")
+			}
+			cd := rec.Header().Get("Content-Disposition")
+			if !strings.Contains(cd, "attachment") {
+				t.Errorf("Content-Disposition = %q, want it to contain %q", cd, "attachment")
+			}
+			if !strings.Contains(cd, bucket) {
+				t.Errorf("Content-Disposition = %q, want it to contain the bucket name %q", cd, bucket)
+			}
+
+			zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+			if err != nil {
+				t.Fatalf("cannot read response body as zip: %v", err)
+			}
+
+			names := make(map[string]bool, len(zr.File))
+			for _, f := range zr.File {
+				names[f.Name] = true
+			}
+			if !names["a.txt"] || !names["b.txt"] {
+				t.Errorf("zip entries = %v, want exactly a.txt and b.txt (common prefix p/q/ stripped)", names)
+			}
+			if names["p/q/a.txt"] || names["p/q/b.txt"] {
+				t.Errorf("zip entries = %v, want the common prefix stripped, not the raw keys", names)
+			}
+		})
 	})
 }

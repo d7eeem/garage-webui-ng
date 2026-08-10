@@ -123,6 +123,32 @@ func TestIsViewerAllowed(t *testing.T) {
 			target: "/browse/b/k",
 			want:   false,
 		},
+		{
+			// Downloading is a read; the mint step only needs a POST
+			// because the selected key list is too large for a URL. This
+			// is the important carve-out: it must NOT widen into allowing
+			// POST /browse/{bucket}, which serves delete (see the next
+			// test case).
+			name:   "minting a download token is allowed",
+			method: http.MethodPost,
+			target: "/browse/download-token",
+			want:   true,
+		},
+		{
+			// The important negative case: POST /browse/{bucket} serves
+			// BulkDeleteObjects's delete action. If this ever flips to
+			// true, a viewer session can delete objects.
+			name:   "posting to a bucket (delete) is still denied",
+			method: http.MethodPost,
+			target: "/browse/some-bucket",
+			want:   false,
+		},
+		{
+			name:   "fetching the archive itself is allowed (it's a GET)",
+			method: http.MethodGet,
+			target: "/browse/b/archive",
+			want:   true,
+		},
 	}
 
 	for _, tt := range tests {

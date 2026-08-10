@@ -1,15 +1,20 @@
 package router
 
 import (
+	"archive/zip"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/d7eeem/garage-webui-ng/schema"
 	"github.com/d7eeem/garage-webui-ng/utils"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -381,6 +386,233 @@ func (b *Browse) BulkDeleteObjects(w http.ResponseWriter, r *http.Request) {
 		failed = append(failed, deleteErrorsToList(res.Errors)...)
 	}
 	utils.ResponseSuccess(w, map[string]any{"deleted": deleted, "errors": failed})
+}
+
+// downloadToken is what utils.Cache stores under downloadTokenCacheKey(token).
+// It is a bearer credential — short-lived, single-use, and bound to both the
+// bucket and the session that minted it — so a leaked archive URL cannot be
+// replayed or reused for a different bucket/user. Loosening any of those
+// three properties makes the archive URL shareable.
+type downloadToken struct {
+	Bucket   string
+	Keys     []string
+	Username string
+}
+
+// downloadTokenTTL is how long a minted token remains valid before the
+// browser must have started the GET that streams the archive.
+const downloadTokenTTL = 60 * time.Second
+
+func downloadTokenCacheKey(token string) string {
+	return "dlzip:" + token
+}
+
+// POST /browse/download-token  body: {"bucket":"...","keys":["a","b/c",...]}
+//
+// Mints a short-lived, single-use, bucket+user-bound token that authorises
+// GET /browse/{bucket}/archive. This is deliberately a SEPARATE route from
+// POST /browse/{bucket} (which serves BulkDeleteObjects's delete action):
+// folding this into that route would force the viewer carve-out in
+// isViewerAllowed to also allow delete. Never merge them.
+//
+// A native browser download cannot send the X-CSRF-Token header that a
+// mutating request normally requires, and the selected key list is too large
+// to fit in a URL — so minting happens over a normal POST (via the JS `api`
+// client, which does attach the CSRF header), and the archive itself is
+// fetched with a plain GET navigation carrying only this token.
+func (b *Browse) CreateDownloadToken(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Bucket string   `json:"bucket"`
+		Keys   []string `json:"keys"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+	if body.Bucket == "" {
+		utils.ResponseErrorStatus(w, fmt.Errorf("bucket is required"), http.StatusBadRequest)
+		return
+	}
+	if len(body.Keys) == 0 {
+		utils.ResponseErrorStatus(w, fmt.Errorf("keys are required"), http.StatusBadRequest)
+		return
+	}
+	if len(body.Keys) > maxListKeys {
+		utils.ResponseErrorStatus(w, fmt.Errorf("too many keys: %d (max %d)", len(body.Keys), maxListKeys), http.StatusBadRequest)
+		return
+	}
+
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		utils.ResponseError(w, fmt.Errorf("cannot generate download token: %w", err))
+		return
+	}
+	token := hex.EncodeToString(tokenBytes)
+
+	username, _ := utils.Session.Get(r, "username").(string)
+
+	utils.Cache.Set(downloadTokenCacheKey(token), downloadToken{
+		Bucket:   body.Bucket,
+		Keys:     body.Keys,
+		Username: username,
+	}, downloadTokenTTL)
+
+	utils.ResponseSuccess(w, map[string]any{"token": token})
+}
+
+// GET /browse/{bucket}/archive?token=<token> — streams the objects named by a
+// token minted via CreateDownloadToken as a single ZIP.
+//
+// The HTTP status is committed the moment the first byte is written below, so
+// everything that can still fail with a clean HTTP error status (missing/
+// invalid/expired/mismatched token, cannot reach S3) MUST be checked before
+// zip.NewWriter starts writing. After that point, a failure on an individual
+// object can only be reported inside the archive itself
+// (DOWNLOAD-ERRORS.txt) — there is no way to turn a 200 already sent into an
+// error status.
+func (b *Browse) DownloadArchive(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		utils.ResponseErrorStatus(w, fmt.Errorf("token is required"), http.StatusBadRequest)
+		return
+	}
+
+	cacheKey := downloadTokenCacheKey(token)
+	cached := utils.Cache.Get(cacheKey)
+	if cached == nil {
+		utils.ResponseErrorStatus(w, fmt.Errorf("download link expired"), http.StatusNotFound)
+		return
+	}
+	dl := cached.(downloadToken)
+
+	// Single-use: invalidate immediately after a successful lookup (by
+	// overwriting the entry with an already-expired TTL) so a leaked or
+	// replayed URL cannot be used twice, regardless of what the
+	// bucket/username check below decides.
+	utils.Cache.Set(cacheKey, dl, -time.Second)
+
+	username, _ := utils.Session.Get(r, "username").(string)
+	if dl.Bucket != bucket || dl.Username != username {
+		utils.ResponseErrorStatus(w, fmt.Errorf("token is not valid for this bucket/user"), http.StatusForbidden)
+		return
+	}
+
+	client, err := getS3Client(bucket)
+	if err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", contentDispositionAttachment(bucket+"-objects.zip"))
+	w.Header().Set("Cache-Control", "no-store")
+
+	entryNames := stripCommonKeyPrefix(dl.Keys)
+
+	// From here on the status is committed — see the function comment.
+	zw := zip.NewWriter(w)
+
+	var failures []string
+	for _, key := range dl.Keys {
+		if err := r.Context().Err(); err != nil {
+			// The client disconnected or the request was cancelled: stop
+			// doing work immediately rather than fetching more objects
+			// nobody will receive.
+			break
+		}
+
+		obj, err := client.GetObject(r.Context(), &s3.GetObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(key),
+		})
+		if err != nil {
+			log.Printf("download archive: cannot get object %q from bucket %q: %v", key, bucket, err)
+			failures = append(failures, fmt.Sprintf("%s: %v", key, err))
+			continue
+		}
+
+		entryWriter, err := zw.Create(entryNames[key])
+		if err != nil {
+			obj.Body.Close()
+			log.Printf("download archive: cannot create zip entry for %q: %v", key, err)
+			failures = append(failures, fmt.Sprintf("%s: %v", key, err))
+			continue
+		}
+
+		_, err = io.Copy(entryWriter, obj.Body)
+		obj.Body.Close()
+		if err != nil {
+			log.Printf("download archive: cannot copy object %q into archive: %v", key, err)
+			failures = append(failures, fmt.Sprintf("%s: %v", key, err))
+		}
+	}
+
+	if len(failures) > 0 {
+		if entryWriter, err := zw.Create("DOWNLOAD-ERRORS.txt"); err == nil {
+			body := "The following objects could not be added to this archive:\n\n" +
+				strings.Join(failures, "\n") + "\n"
+			io.WriteString(entryWriter, body)
+		}
+	}
+
+	// zw.Close's error is best-effort: the client may have already
+	// disconnected, and the HTTP status is already committed either way.
+	_ = zw.Close()
+}
+
+// stripCommonKeyPrefix computes the archive entry name for each key by
+// removing the longest common directory prefix shared by all of them, so
+// selecting several files that live under the same folder (e.g.
+// "assets/css/main.css", "assets/css/vars.css") doesn't repeat that folder
+// in every archive entry name ("main.css", "vars.css" instead). Collision-
+// free by construction: stripping only ever removes a prefix all keys share,
+// so any two keys that still differ after their common directory do so on
+// the remaining, distinct portion of the key.
+func stripCommonKeyPrefix(keys []string) map[string]string {
+	entries := make(map[string]string, len(keys))
+	prefix := commonDirPrefix(keys)
+	for _, k := range keys {
+		name := strings.TrimPrefix(k, prefix)
+		if name == "" {
+			name = path.Base(k)
+		}
+		entries[k] = name
+	}
+	return entries
+}
+
+// commonDirPrefix returns the longest prefix shared by every key, trimmed
+// back to the last '/' so it never cuts a filename in half (e.g. "report1"
+// and "report2" share "report", but that is not a directory).
+func commonDirPrefix(keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	prefix := keys[0]
+	for _, k := range keys[1:] {
+		prefix = commonStringPrefix(prefix, k)
+		if prefix == "" {
+			break
+		}
+	}
+	if idx := strings.LastIndex(prefix, "/"); idx >= 0 {
+		return prefix[:idx+1]
+	}
+	return ""
+}
+
+// commonStringPrefix returns the longest common byte-wise prefix of a and b.
+func commonStringPrefix(a, b string) string {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	return a[:i]
 }
 
 // GET /multipart/{bucket} — list unfinished multipart uploads for a bucket.
