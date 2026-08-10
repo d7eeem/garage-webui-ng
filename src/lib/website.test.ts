@@ -318,6 +318,17 @@ describe("getPublicAccess", () => {
     ).toEqual({ state: "private" });
   });
 
+  // Ordering guard: websiteAccess must be checked BEFORE the URL lookup.
+  // With no public URL configured, a reversed order would report this private
+  // bucket as "public-no-url" — i.e. "public read enabled" — which is exactly
+  // backwards. Every other private case here supplies a working URL, so this
+  // is the only case that pins the order.
+  it("is private when websiteAccess is false and no public URL is configured", () => {
+    expect(
+      getPublicAccess(false, "assets", "dashboard/homepage.svg", undefined)
+    ).toEqual({ state: "private" });
+  });
+
   it("is public-no-url when websiteAccess is true but no public URL can be built", () => {
     expect(
       getPublicAccess(true, "assets", "dashboard/homepage.svg", undefined)
