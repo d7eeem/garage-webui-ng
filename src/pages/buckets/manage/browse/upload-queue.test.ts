@@ -317,7 +317,7 @@ describe("uploadQueue", () => {
 
   beforeEach(() => {
     instances = [];
-    uploadQueue.setState({ items: [], completedCount: 0 });
+    uploadQueue.setState({ items: [], completed: null, collapsed: false });
 
     class TrackedFakeXhr extends FakeXhr {
       constructor() {
@@ -398,5 +398,116 @@ describe("uploadQueue", () => {
       MAX_CONCURRENT_UPLOADS
     );
     expect(items.filter((i) => i.status === "queued")).toHaveLength(1);
+  });
+
+  it("a failed item keeps its File — retry resends it via a new transport", () => {
+    uploadQueue.enqueue("bucket", "prefix/", [makeFile("f0.txt")]);
+    const id = uploadQueue.getState().items[0].id;
+
+    instances[0].status = 500;
+    instances[0].responseText = "boom";
+    instances[0].onload?.();
+    expect(uploadQueue.getState().items[0].status).toBe("error");
+
+    uploadQueue.retry(id);
+
+    // A fresh transport started for the same row, immediately (a slot is
+    // free) — proof the original File was retained rather than dropped by
+    // the (now-split) cleanup on the error path.
+    expect(instances).toHaveLength(2);
+    expect(uploadQueue.getState().items[0].status).toBe("uploading");
+
+    instances[1].status = 200;
+    instances[1].onload?.();
+    expect(uploadQueue.getState().items[0].status).toBe("done");
+  });
+
+  it("retry does not create a second row", () => {
+    uploadQueue.enqueue("bucket", "prefix/", [makeFile("f0.txt")]);
+    const id = uploadQueue.getState().items[0].id;
+
+    instances[0].status = 500;
+    instances[0].responseText = "boom";
+    instances[0].onload?.();
+
+    uploadQueue.retry(id);
+
+    const items = uploadQueue.getState().items;
+    expect(items).toHaveLength(1);
+    expect(items[0].id).toBe(id);
+  });
+
+  it("retry no-ops on a non-error item", () => {
+    uploadQueue.enqueue("bucket", "prefix/", [makeFile("f0.txt")]);
+    const id = uploadQueue.getState().items[0].id;
+    expect(uploadQueue.getState().items[0].status).toBe("uploading");
+
+    uploadQueue.retry(id);
+
+    expect(instances).toHaveLength(1);
+    expect(uploadQueue.getState().items[0].status).toBe("uploading");
+  });
+
+  it("clearFinished removes only terminal rows, leaving active ones", () => {
+    const files = [makeFile("f0.txt"), makeFile("f1.txt"), makeFile("f2.txt")];
+    uploadQueue.enqueue("bucket", "prefix/", files);
+    const ids = uploadQueue.getState().items.map((i) => i.id);
+
+    instances[0].status = 200;
+    instances[0].onload?.(); // f0 -> done
+
+    instances[1].status = 500;
+    instances[1].responseText = "boom";
+    instances[1].onload?.(); // f1 -> error
+
+    // f2 stays uploading.
+
+    uploadQueue.clearFinished();
+
+    const items = uploadQueue.getState().items;
+    expect(items).toHaveLength(1);
+    expect(items[0].id).toBe(ids[2]);
+    expect(items[0].status).toBe("uploading");
+  });
+
+  it("the completion signal names the bucket that actually finished", () => {
+    uploadQueue.enqueue("bucket-a", "p/", [makeFile("a.txt")]);
+    uploadQueue.enqueue("bucket-b", "p/", [makeFile("b.txt")]);
+
+    // Both start immediately — well under MAX_CONCURRENT_UPLOADS.
+    instances[1].status = 200;
+    instances[1].onload?.();
+
+    expect(uploadQueue.getState().completed).toEqual({
+      bucket: "bucket-b",
+      seq: 1,
+    });
+  });
+
+  it("toggleCollapsed changes only collapsed — handles and pendingFiles stay intact", () => {
+    const files = [makeFile("f0.txt"), makeFile("f1.txt")];
+    uploadQueue.enqueue("bucket", "prefix/", files);
+    const [id0, id1] = uploadQueue.getState().items.map((i) => i.id);
+    const itemsBefore = uploadQueue.getState().items;
+
+    expect(uploadQueue.getState().collapsed).toBe(false);
+    uploadQueue.toggleCollapsed();
+    expect(uploadQueue.getState().collapsed).toBe(true);
+
+    // Item statuses are untouched by the toggle.
+    expect(uploadQueue.getState().items).toEqual(itemsBefore);
+
+    // handles: cancel still aborts the real in-flight xhr.
+    uploadQueue.cancel(id0);
+    expect(instances[0].aborted).toBe(true);
+
+    // pendingFiles: a failed item's File survived, so it can still be retried.
+    instances[1].status = 500;
+    instances[1].responseText = "boom";
+    instances[1].onload?.();
+    uploadQueue.retry(id1);
+    expect(
+      uploadQueue.getState().items.find((i) => i.id === id1)?.status
+    ).toBe("uploading");
   });
 });

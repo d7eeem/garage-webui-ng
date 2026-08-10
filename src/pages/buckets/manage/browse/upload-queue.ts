@@ -145,12 +145,22 @@ export function getUploadItemPublicUrl(
 
 type UploadQueueState = {
   items: UploadItem[];
-  completedCount: number;
+  /**
+   * Names *which* bucket most recently finished an upload, bumping `seq` on
+   * every success. The card is global and can hold items from several
+   * buckets at once, so a bare counter (the old `completedCount`) cannot say
+   * which bucket's listing to invalidate — this can.
+   */
+  completed: { bucket: string; seq: number } | null;
+  /** Lives in the store, not component state, so collapsing the card
+   * survives re-renders (and is inspectable from tests). */
+  collapsed: boolean;
 };
 
 const store = createStore<UploadQueueState>(() => ({
   items: [],
-  completedCount: 0,
+  completed: null,
+  collapsed: false,
 }));
 
 /** In-flight transports, keyed by item id. Not serializable state, so it
@@ -192,8 +202,12 @@ const patchItem = (
   return patched;
 };
 
-const cleanup = (id: string) => {
+// Drop the transport handle but KEEP the File: a failed item can be retried,
+// and the File is the only thing we cannot reconstruct.
+const releaseHandle = (id: string) => {
   handles.delete(id);
+};
+const releaseFile = (id: string) => {
   pendingFiles.delete(id);
 };
 
@@ -241,19 +255,27 @@ const pump = () => {
         );
       },
       onSuccess: () => {
-        cleanup(item.id);
+        releaseHandle(item.id);
+        releaseFile(item.id);
         const patched = patchItem(item.id, (cur) =>
           cur.status === "canceled"
             ? null
             : { ...cur, status: "done", loaded: cur.size }
         );
         if (patched) {
-          store.setState((s) => ({ completedCount: s.completedCount + 1 }));
+          store.setState((s) => ({
+            completed: {
+              bucket: item.bucket,
+              seq: (s.completed?.seq ?? 0) + 1,
+            },
+          }));
         }
         pump();
       },
       onError: (message) => {
-        cleanup(item.id);
+        // Handle only: the File stays in `pendingFiles` so `retry()` can
+        // resend it without asking the user to re-pick the file.
+        releaseHandle(item.id);
         patchItem(item.id, (cur) =>
           cur.status === "canceled"
             ? null
@@ -288,7 +310,8 @@ const enqueue = (bucket: string, prefix: string, files: File[]) => {
 
 const cancel = (id: string) => {
   handles.get(id)?.abort();
-  cleanup(id);
+  releaseHandle(id);
+  releaseFile(id);
 
   patchItem(id, (cur) =>
     cur.status === "done" || cur.status === "error"
@@ -299,30 +322,70 @@ const cancel = (id: string) => {
   pump();
 };
 
+/**
+ * Puts a failed item back in the queue, reusing its original File, bucket
+ * and key. Does NOT create a new row — one row per file. No-ops if the item
+ * is not currently in "error", or if its File was already released (should
+ * not happen for an error row, but this guards against it anyway).
+ */
+const retry = (id: string) => {
+  const item = store.getState().items.find((i) => i.id === id);
+  if (!item || item.status !== "error") return;
+  if (!pendingFiles.has(id)) return;
+
+  patchItem(id, (cur) =>
+    cur.status !== "error"
+      ? null
+      : { ...cur, status: "queued", loaded: 0, error: undefined }
+  );
+
+  pump();
+};
+
 const dismiss = (id: string) => {
-  cleanup(id);
+  releaseHandle(id);
+  releaseFile(id);
   store.setState((state) => ({
     items: state.items.filter((item) => item.id !== id),
   }));
 };
 
 const clearFinished = () => {
-  store.setState((state) => ({
-    items: state.items.filter(
+  store.setState((state) => {
+    const removed = state.items.filter(
       (item) =>
-        item.status !== "done" &&
-        item.status !== "error" &&
-        item.status !== "canceled"
-    ),
-  }));
+        item.status === "done" ||
+        item.status === "error" ||
+        item.status === "canceled"
+    );
+    for (const item of removed) {
+      releaseHandle(item.id);
+      releaseFile(item.id);
+    }
+
+    return {
+      items: state.items.filter(
+        (item) =>
+          item.status !== "done" &&
+          item.status !== "error" &&
+          item.status !== "canceled"
+      ),
+    };
+  });
+};
+
+const toggleCollapsed = () => {
+  store.setState((state) => ({ collapsed: !state.collapsed }));
 };
 
 const uploadQueue = {
   ...store,
   enqueue,
   cancel,
+  retry,
   dismiss,
   clearFinished,
+  toggleCollapsed,
 };
 
 export default uploadQueue;

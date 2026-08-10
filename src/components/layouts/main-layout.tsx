@@ -3,6 +3,7 @@ import { Suspense, useContext, useEffect } from "react";
 import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import Sidebar from "../containers/sidebar";
 import AccountButton from "../containers/account-button";
+import UploadCard from "../containers/upload-card";
 import { ArrowLeft, MenuIcon } from "lucide-react";
 import Button from "../ui/button";
 import { useDisclosure } from "@/hooks/useDisclosure";
@@ -49,6 +50,8 @@ const MainLayout = () => {
           <Outlet />
         </Suspense>
       </main>
+
+      <UploadCard />
     </Drawer>
   );
 };
