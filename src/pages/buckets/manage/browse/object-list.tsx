@@ -17,6 +17,8 @@ import GotoTopButton from "@/components/ui/goto-top-btn";
 import Button from "@/components/ui/button";
 import Checkbox from "@/components/ui/checkbox";
 import { Dispatch, SetStateAction } from "react";
+import { useConfig } from "@/hooks/useConfig";
+import { getPublicAccess } from "@/lib/website";
 
 type Props = {
   prefix?: string;
@@ -31,7 +33,8 @@ const ObjectList = ({
   selected,
   setSelected,
 }: Props) => {
-  const { bucketName } = useBucketContext();
+  const { bucket, bucketName } = useBucketContext();
+  const { data: config } = useConfig();
   const {
     data,
     error,
@@ -152,6 +155,9 @@ const ObjectList = ({
                 : object.objectKey;
             const ext = extIdx >= 0 ? object.objectKey.substring(extIdx) : null;
             const fullKey = currentPrefix + object.objectKey;
+            const isPublic =
+              getPublicAccess(bucket.websiteAccess, bucketName, fullKey, config)
+                .state === "public";
 
             return (
               <tr
@@ -174,6 +180,11 @@ const ObjectList = ({
                     <FilePreview ext={ext?.substring(1)} object={object} />
                     <span className="truncate max-w-[40vw]">{filename}</span>
                     {ext && <span className="text-base-content/60">{ext}</span>}
+                    {isPublic && (
+                      <span className="badge badge-ghost badge-sm ml-2 shrink-0">
+                        Public
+                      </span>
+                    )}
                   </span>
                 </td>
                 <td className="whitespace-nowrap">
