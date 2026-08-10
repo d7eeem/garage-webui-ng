@@ -166,7 +166,7 @@ Garage WebUI-NG reads your `garage.toml` and lets every setting be overridden by
 | `API_BASE_URL` | from `garage.toml` | Garage **Admin API** endpoint (cluster/bucket/key management). |
 | `S3_ENDPOINT_URL` | from `garage.toml` | Garage **S3 API** endpoint (object browse/upload/download). |
 | `S3_PUBLIC_ENDPOINT_URL` | *(unset)* | Public S3 endpoint the browser can reach — enables **presigned share links**. |
-| `S3_WEB_PUBLIC_URL` | *(unset)* | Public base URL for **static website hosting**, overriding the `http://<bucket><root_domain>:<port>` address derived from `garage.toml`. Use `{bucket}` for vhost-style routing (`https://{bucket}.web.example.com`); without it the bucket becomes the first path segment (`https://web.example.com` → `https://web.example.com/mybucket`). Set this whenever a reverse proxy fronts Garage's web endpoint. |
+| `S3_WEB_PUBLIC_URL` | *(unset)* | Public base URL for **static website hosting**, overriding the `http://<bucket><root_domain>:<port>` address derived from `garage.toml`. **Must contain a `{bucket}` token** (`https://{bucket}.web.example.com`) — Garage's website endpoint resolves the bucket from the `Host` header only, so a template without the token cannot address any bucket and is treated as unset. Set this whenever a reverse proxy fronts Garage's web endpoint. |
 | `MAX_UPLOAD_SIZE_MB` | `512` | Largest single file the object browser accepts, in MB. A larger upload is refused with **413** before it is buffered. Must not exceed the body-size limit of any reverse proxy in front of the app (nginx `client_max_body_size`, Caddy `request_body max_size`). |
 | `S3_REGION` | `garage` | S3 region name. |
 | `CONFIG_PATH` | `/etc/garage.toml` | Path to the Garage config file to read. |
@@ -213,11 +213,25 @@ bucket's Overview tab; there is no separate ACL or "public" flag.
    a **Copy URL** action; the same permanent URL is also on the row's
    **Share** dialog and as an **[Open]** link.
 4. Set `S3_WEB_PUBLIC_URL` (see [`.env.example`](.env.example)) so those URLs
-   point at the address your users can actually reach — it must route to
-   Garage's **web** port (`s3_web`/port `3902` in the Compose stack), **not**
-   the S3 API port. Without it, URLs are derived from `garage.toml`'s
-   `[s3_web] root_domain`, which is usually only reachable inside your
-   network.
+   point at the address your users can actually reach. The template **must
+   contain a `{bucket}` token** (e.g. `https://{bucket}.web.example.com`) —
+   Garage's website endpoint is virtual-host only, resolving the bucket
+   exclusively from the `Host` header, so a template without the token cannot
+   address any bucket and is treated as unset. Without it, URLs are derived
+   from `garage.toml`'s `[s3_web] root_domain`, which is usually only
+   reachable inside your network.
+
+   Two deployment details that are easy to miss:
+   - Whatever fronts this hostname must route the request to Garage's
+     **web** port (`s3_web`/port `3902` in the Compose stack), **not** the S3
+     API port, and must forward the original `Host` header unchanged — that
+     header is the only thing Garage uses to pick the bucket.
+   - **TLS wildcards do not nest.** A certificate for `*.example.tld` does
+     **not** cover `assets.web.example.tld` — a wildcard matches exactly one
+     label. A nested website root domain (e.g. `web.example.tld`) needs its
+     own `*.web.example.tld` certificate. If public DNS for the zone resolves
+     to a private address, an HTTP-01 challenge cannot reach it to validate,
+     so a **DNS-01** challenge is the only way to issue that certificate.
 
 There is no anonymous directory listing — Garage serves the configured index
 document for a prefix and the error document otherwise, never a listing of
