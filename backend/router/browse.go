@@ -180,9 +180,18 @@ func (b *Browse) GetOneObject(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", contentDispositionAttachment(keys[len(keys)-1]))
 	}
 
+	// This body is rendered inside the console's own media viewer (an
+	// <iframe> for PDFs), so it must be framable by us. The global
+	// X-Frame-Options: DENY from middleware.SecurityHeaders is correct for the
+	// console's own HTML but forbids framing by *anyone*, same-origin
+	// included — which is what left PDF previews blank. Narrow it to
+	// SAMEORIGIN here, and express the same rule for modern browsers with
+	// frame-ancestors 'self'. Another site still cannot frame this.
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+
 	// Defence in depth: even a type on the allowlist is served with an empty
 	// origin and no script execution, so a mislabelled body cannot act.
-	w.Header().Set("Content-Security-Policy", "sandbox")
+	w.Header().Set("Content-Security-Policy", objectViewCSP(stored))
 
 	if object.ContentLength != nil {
 		w.Header().Set("Content-Length", strconv.FormatInt(*object.ContentLength, 10))
@@ -945,6 +954,41 @@ func isInlineSafe(contentType string) bool {
 		return false
 	}
 	return inlineSafeContentTypes[strings.ToLower(mediaType)]
+}
+
+// isPDF reports whether a stored content type is application/pdf, parsed the
+// same way isInlineSafe parses it (mime.ParseMediaType, lowercased, ignoring
+// parameters) so "application/pdf; charset=binary" still matches. A parse
+// error returns false — fail closed, matching isInlineSafe.
+func isPDF(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	return strings.ToLower(mediaType) == "application/pdf"
+}
+
+// objectViewCSP builds the Content-Security-Policy for an inline object body.
+//
+// `sandbox` gives the body an opaque origin with no script execution, so a
+// mislabelled body cannot act on the console's origin — that is the property
+// worth protecting and it is preserved in every branch below.
+//
+// PDFs additionally need `allow-scripts`: browsers render PDFs with a viewer
+// that is itself scripted, and a fully sandboxed frame blanks it. This is a
+// deliberate, narrow relaxation — `allow-same-origin` is NOT granted, so the
+// document keeps its opaque origin and still cannot read the console's cookies
+// (including the deliberately non-HttpOnly csrf_token), touch the parent DOM,
+// or make credentialed same-origin requests. Scripts confined to an opaque
+// origin cannot reach anything that matters.
+//
+// frame-ancestors 'self' lets the console's own viewer frame the body while
+// still refusing every other site.
+func objectViewCSP(contentType string) string {
+	if isPDF(contentType) {
+		return "sandbox allow-scripts; frame-ancestors 'self'"
+	}
+	return "sandbox; frame-ancestors 'self'"
 }
 
 func getBucketCredentials(bucket string) (aws.CredentialsProvider, error) {

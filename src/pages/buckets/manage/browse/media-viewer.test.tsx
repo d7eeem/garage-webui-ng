@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import MediaViewer, { classifyMedia, mediaViewer } from "./media-viewer";
 
 describe("classifyMedia", () => {
@@ -94,5 +94,61 @@ describe("MediaViewer", () => {
     expect(screen.getByRole("button", { name: "Previous" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next" })).toBeInTheDocument();
     expect(screen.getByText("1 of 2")).toBeInTheDocument();
+  });
+
+  // PDFs cannot report a render failure (<iframe> does not fire onError for a
+  // response the browser declines to render — see plan 046), so the frame is
+  // always paired with an escape hatch rather than a failure-only fallback.
+  it("renders an <iframe> for a .pdf item whose src ends in ?view=1", () => {
+    render(<MediaViewer />);
+
+    act(() => {
+      mediaViewer.open({
+        items: [{ objectKey: "doc.pdf", url: "/doc.pdf" }],
+        index: 0,
+      });
+    });
+
+    const frame = screen.getByTitle("doc.pdf");
+    expect(frame.tagName).toBe("IFRAME");
+    expect(frame.getAttribute("src")).toContain("/doc.pdf?view=1");
+  });
+
+  it("renders both the Open in new tab and Download buttons alongside the PDF frame", () => {
+    render(<MediaViewer />);
+
+    act(() => {
+      mediaViewer.open({
+        items: [{ objectKey: "doc.pdf", url: "/doc.pdf" }],
+        index: 0,
+      });
+    });
+
+    expect(
+      screen.getByRole("button", { name: "Open in new tab" })
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download" })).toBeInTheDocument();
+  });
+
+  it("opens the ?dl=1 URL when the Download button is clicked", () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    render(<MediaViewer />);
+
+    act(() => {
+      mediaViewer.open({
+        items: [{ objectKey: "doc.pdf", url: "/doc.pdf" }],
+        index: 0,
+      });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+
+    expect(openSpy).toHaveBeenCalledWith(
+      expect.stringContaining("?dl=1"),
+      "_blank"
+    );
+
+    openSpy.mockRestore();
   });
 });

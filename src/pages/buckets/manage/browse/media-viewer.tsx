@@ -185,7 +185,37 @@ const MediaBody = ({ item, kind, src, onError }: MediaBodyProps) => {
   }
 
   if (kind === "pdf") {
-    return <iframe src={src} title={item.objectKey} className="w-full h-[70vh]" />;
+    // <iframe> does not fire onError for a response the browser declines to
+    // render (e.g. a framing policy it doesn't like), so this failure mode is
+    // undetectable from here — no onError, no load-timeout heuristic. The
+    // line below is the escape hatch: it is always shown, not just after a
+    // detected failure, because there is nothing to detect it with.
+    return (
+      <div className="flex flex-col gap-2">
+        <iframe src={src} title={item.objectKey} className="w-full h-[70vh]" />
+        <div className="flex items-center gap-2 text-sm text-base-content/60">
+          <span>Not displaying?</span>
+          <Button
+            color="ghost"
+            size="sm"
+            onClick={() => window.open(src, "_blank")}
+          >
+            Open in new tab
+          </Button>
+          <Button
+            color="ghost"
+            size="sm"
+            onClick={() =>
+              // Matches object-actions.tsx's onDownload / this file's own
+              // MediaViewer.onDownload.
+              window.open(API_URL + item.url + "?dl=1", "_blank")
+            }
+          >
+            Download
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   if (kind === "text") {
