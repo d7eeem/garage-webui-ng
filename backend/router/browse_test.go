@@ -100,6 +100,65 @@ func TestIsInlineSafe(t *testing.T) {
 	}
 }
 
+// TestIsPDF pins the media-type match objectViewCSP relies on to decide
+// whether an inline body gets the allow-scripts relaxation.
+func TestIsPDF(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		want        bool
+	}{
+		{name: "pdf", contentType: "application/pdf", want: true},
+		{name: "pdf with charset param", contentType: "application/pdf; charset=binary", want: true},
+		{name: "uppercase is normalised", contentType: "APPLICATION/PDF", want: true},
+		{name: "png is not pdf", contentType: "image/png", want: false},
+		{name: "empty string fails closed", contentType: "", want: false},
+		{name: "lookalike type is not pdf", contentType: "application/x-pdf", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isPDF(tt.contentType)
+			if got != tt.want {
+				t.Errorf("isPDF(%q) = %v, want %v", tt.contentType, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestObjectViewCSP is the regression guard for plan 046: X-Frame-Options and
+// this CSP together decide whether a PDF preview renders. A PDF needs
+// allow-scripts (its viewer is itself scripted); everything else must not get
+// it. Neither branch may ever grant allow-same-origin — combined with
+// allow-scripts that would hand a mislabelled body the console's own origin,
+// exactly what the sandbox exists to prevent (see plan 043). The
+// allow-same-origin assertion is written as an explicit substring check
+// rather than an equality test, so it cannot be quietly loosened by editing
+// the expected string.
+func TestObjectViewCSP(t *testing.T) {
+	pdf := objectViewCSP("application/pdf")
+	if !strings.Contains(pdf, "allow-scripts") {
+		t.Errorf("objectViewCSP(application/pdf) = %q, want it to contain allow-scripts", pdf)
+	}
+	if !strings.Contains(pdf, "frame-ancestors 'self'") {
+		t.Errorf("objectViewCSP(application/pdf) = %q, want it to contain frame-ancestors 'self'", pdf)
+	}
+	if strings.Contains(pdf, "allow-same-origin") {
+		t.Errorf("objectViewCSP(application/pdf) = %q, must never contain allow-same-origin", pdf)
+	}
+
+	png := objectViewCSP("image/png")
+	if strings.Contains(png, "allow-scripts") {
+		t.Errorf("objectViewCSP(image/png) = %q, must not contain allow-scripts", png)
+	}
+	if !strings.Contains(png, "frame-ancestors 'self'") {
+		t.Errorf("objectViewCSP(image/png) = %q, want it to contain frame-ancestors 'self'", png)
+	}
+	if strings.Contains(png, "allow-same-origin") {
+		t.Errorf("objectViewCSP(image/png) = %q, must never contain allow-same-origin", png)
+	}
+}
+
 // fakeAPIError is a minimal smithy.APIError implementation for exercising
 // isNotFoundErr against an error code the SDK's concrete s3/types package
 // does not model (e.g. "AccessDenied" has no matching struct there).
