@@ -134,7 +134,7 @@ The user database is created at `./data/garage-webui-ng.db` relative to the work
 
 **The app never updates itself.** It holds your Garage admin token, and downloading and executing code inside that process is a risk this project deliberately does not take — releases aren't published with checksums or signatures yet, so there is no safe way to verify what would be fetched.
 
-Instead, the **About** tab (Settings → About) shows the version you're running, whether a newer release exists (set `UPDATE_CHECK_ENABLED=true` to enable that check), and the exact command to update *your* deployment: `docker compose pull && docker compose up -d` for a container, or a `systemctl stop` / `install` / `systemctl start` sequence for a binary install — detected automatically from whether the running executable is writable.
+Instead, the **About** tab (Settings → About) shows the version you're running and whether a newer release exists (set `UPDATE_CHECK_ENABLED=true` to enable that check). If it detects that the running executable is writable, it also shows the exact `systemctl stop` / `install` / `systemctl start` sequence for a binary install. Otherwise — a container image, or a hardened service whose binary it cannot write — it just says the deployment is updated from outside the app, since a container and a locked-down systemd service are updated differently and there's no way to safely guess which one you're running.
 
 ## 🐳 Docker Deployment
 

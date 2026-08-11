@@ -51,7 +51,7 @@ const AboutTab = () => {
         {update?.updateCommand ? (
           <div className="mt-2">
             <p className="text-sm text-base-content/60">
-              To update this deployment:
+              Download the release binary first, then:
             </p>
             <div className="relative">
               <code className="block whitespace-pre-wrap break-all rounded bg-base-200 p-2 text-xs pr-10">
@@ -66,6 +66,11 @@ const AboutTab = () => {
               />
             </div>
           </div>
+        ) : update?.deployment === "managed" ? (
+          <p className="text-sm text-base-content/60 mt-2">
+            This deployment is updated from outside the app — replace the
+            container image or the binary and restart the service.
+          </p>
         ) : null}
 
         {update && !update.enabled ? (

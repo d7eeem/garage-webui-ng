@@ -271,10 +271,17 @@ func classifyOpenResult(execErr, openErr error) DeploymentKind {
 
 // updateCommandFor returns the shell command that updates a deployment of the
 // given kind. Informational only: nothing in this service ever runs it.
+//
+// deploymentManaged deliberately returns "": that kind covers both a
+// container image AND a hardened systemd service (root-owned binary, e.g.
+// under ProtectSystem=strict) — two setups with no shared update command. A
+// container operator has no compose file to pull; a hardened-service operator
+// has no container to replace. We cannot tell the two apart without exactly
+// the runtime sniffing this feature rejects (see detectDeployment), so rather
+// than guess and mis-advise whichever one we guessed wrong, we say nothing
+// and let the UI render generic "updated from outside" prose instead.
 func updateCommandFor(kind DeploymentKind) string {
 	switch kind {
-	case deploymentManaged:
-		return "docker compose pull && docker compose up -d"
 	case deploymentBinary:
 		return "sudo systemctl stop garage-webui && sudo install -m 0755 ./garage-webui-ng /usr/local/bin/garage-webui-ng && sudo systemctl start garage-webui"
 	default:

@@ -108,15 +108,20 @@ describe("AboutTab", () => {
     mockData.update = {
       enabled: false,
       current: "v3.3.0",
-      deployment: "managed",
-      updateCommand: "docker compose pull && docker compose up -d",
+      deployment: "binary",
+      updateCommand:
+        "sudo systemctl stop garage-webui && sudo install -m 0755 ./garage-webui-ng /usr/local/bin/garage-webui-ng && sudo systemctl start garage-webui",
     };
 
     render(<AboutTab />);
 
-    expect(screen.getByText(/To update this deployment/)).toBeInTheDocument();
     expect(
-      screen.getByText("docker compose pull && docker compose up -d")
+      screen.getByText(/Download the release binary first, then/)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "sudo systemctl stop garage-webui && sudo install -m 0755 ./garage-webui-ng /usr/local/bin/garage-webui-ng && sudo systemctl start garage-webui"
+      )
     ).toBeInTheDocument();
   });
 
@@ -132,8 +137,43 @@ describe("AboutTab", () => {
     render(<AboutTab />);
 
     expect(
-      screen.queryByText(/To update this deployment/)
+      screen.queryByText(/Download the release binary first/)
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/updated from outside the app/)
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders update-from-outside prose (no code block, no copy button) when deployment is managed", () => {
+    mockData.config = { version: "v3.3.0" };
+    mockData.update = {
+      enabled: false,
+      current: "v3.3.0",
+      deployment: "managed",
+      updateCommand: "",
+    };
+
+    render(<AboutTab />);
+
+    expect(
+      screen.getByText(/updated from outside the app/)
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Copy update command")).not.toBeInTheDocument();
+    expect(document.querySelector("code")).not.toBeInTheDocument();
+  });
+
+  it("never suggests a docker command for a managed deployment", () => {
+    mockData.config = { version: "v3.3.0" };
+    mockData.update = {
+      enabled: false,
+      current: "v3.3.0",
+      deployment: "managed",
+      updateCommand: "",
+    };
+
+    render(<AboutTab />);
+
+    expect(document.body.textContent).not.toContain("docker");
   });
 
   it("copies the exact update command when the copy button is clicked", async () => {

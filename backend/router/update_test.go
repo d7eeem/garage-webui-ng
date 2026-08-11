@@ -197,8 +197,12 @@ func TestUpdateCommandFor(t *testing.T) {
 		kind DeploymentKind
 		want func(cmd string) bool
 	}{
+		// managed covers both a container AND a hardened systemd service
+		// (root-owned binary, e.g. ProtectSystem=strict) — two setups with no
+		// shared update command. Guessing one (e.g. "docker compose pull")
+		// would mis-advise the other, so this must be exactly "".
 		{name: "managed", kind: deploymentManaged, want: func(cmd string) bool {
-			return strings.Contains(cmd, "docker compose pull")
+			return cmd == ""
 		}},
 		{name: "binary", kind: deploymentBinary, want: func(cmd string) bool {
 			return strings.Contains(cmd, "systemctl") && strings.Contains(cmd, "install")
@@ -219,6 +223,16 @@ func TestUpdateCommandFor(t *testing.T) {
 			}
 		})
 	}
+
+	// Regression guard for this amendment: managed must never carry a
+	// container-specific example, even if the equality check above is
+	// weakened by a future edit.
+	t.Run("managed never suggests docker", func(t *testing.T) {
+		got := updateCommandFor(deploymentManaged)
+		if strings.Contains(got, "docker") {
+			t.Errorf("updateCommandFor(managed) = %q, contains %q; managed also covers hardened systemd services with no docker compose file, so this command would mis-advise them", got, "docker")
+		}
+	})
 }
 
 func TestDeploymentFieldsAreSetWhenDisabled(t *testing.T) {
