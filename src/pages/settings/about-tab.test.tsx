@@ -14,6 +14,8 @@ const mockData = vi.hoisted(() => ({
         url?: string;
         updateAvailable?: boolean;
         checkFailed?: boolean;
+        deployment?: "binary" | "managed" | "unknown";
+        updateCommand?: string;
       }
     | undefined,
 }));
@@ -26,10 +28,21 @@ vi.mock("./hooks", () => ({
   useUpdateCheck: () => ({ data: mockData.update }),
 }));
 
+const mockCopyToClipboard = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/utils")>();
+  return {
+    ...actual,
+    copyToClipboard: mockCopyToClipboard,
+  };
+});
+
 describe("AboutTab", () => {
   beforeEach(() => {
     mockData.config = undefined;
     mockData.update = undefined;
+    mockCopyToClipboard.mockClear();
   });
 
   it("renders the version from config", () => {
@@ -88,5 +101,99 @@ describe("AboutTab", () => {
     render(<AboutTab />);
 
     expect(screen.getByText(/Update checks are off/)).toBeInTheDocument();
+  });
+
+  it("renders the update command when present", () => {
+    mockData.config = { version: "v3.3.0" };
+    mockData.update = {
+      enabled: false,
+      current: "v3.3.0",
+      deployment: "binary",
+      updateCommand:
+        "sudo systemctl stop garage-webui && sudo install -m 0755 ./garage-webui-ng /usr/local/bin/garage-webui-ng && sudo systemctl start garage-webui",
+    };
+
+    render(<AboutTab />);
+
+    expect(
+      screen.getByText(/Download the release binary first, then/)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "sudo systemctl stop garage-webui && sudo install -m 0755 ./garage-webui-ng /usr/local/bin/garage-webui-ng && sudo systemctl start garage-webui"
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("renders no command block when updateCommand is absent or empty", () => {
+    mockData.config = { version: "v3.3.0" };
+    mockData.update = {
+      enabled: false,
+      current: "v3.3.0",
+      deployment: "unknown",
+      updateCommand: "",
+    };
+
+    render(<AboutTab />);
+
+    expect(
+      screen.queryByText(/Download the release binary first/)
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/updated from outside the app/)
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders update-from-outside prose (no code block, no copy button) when deployment is managed", () => {
+    mockData.config = { version: "v3.3.0" };
+    mockData.update = {
+      enabled: false,
+      current: "v3.3.0",
+      deployment: "managed",
+      updateCommand: "",
+    };
+
+    render(<AboutTab />);
+
+    expect(
+      screen.getByText(/updated from outside the app/)
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Copy update command")).not.toBeInTheDocument();
+    expect(document.querySelector("code")).not.toBeInTheDocument();
+  });
+
+  it("never suggests a docker command for a managed deployment", () => {
+    mockData.config = { version: "v3.3.0" };
+    mockData.update = {
+      enabled: false,
+      current: "v3.3.0",
+      deployment: "managed",
+      updateCommand: "",
+    };
+
+    render(<AboutTab />);
+
+    expect(document.body.textContent).not.toContain("docker");
+  });
+
+  it("copies the exact update command when the copy button is clicked", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    mockData.config = { version: "v3.3.0" };
+    mockData.update = {
+      enabled: false,
+      current: "v3.3.0",
+      deployment: "binary",
+      updateCommand:
+        "sudo systemctl stop garage-webui && sudo install -m 0755 ./garage-webui-ng /usr/local/bin/garage-webui-ng && sudo systemctl start garage-webui",
+    };
+
+    render(<AboutTab />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Copy update command"));
+
+    expect(mockCopyToClipboard).toHaveBeenCalledWith(
+      "sudo systemctl stop garage-webui && sudo install -m 0755 ./garage-webui-ng /usr/local/bin/garage-webui-ng && sudo systemctl start garage-webui"
+    );
   });
 });

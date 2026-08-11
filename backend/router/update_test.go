@@ -2,6 +2,8 @@ package router
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -164,5 +166,100 @@ func TestUpdateGetEnabledUpstreamFailure(t *testing.T) {
 	}
 	if !got.Enabled {
 		t.Errorf("expected enabled=true, got false")
+	}
+}
+
+func TestClassifyOpenResult(t *testing.T) {
+	tests := []struct {
+		name    string
+		execErr error
+		openErr error
+		want    DeploymentKind
+	}{
+		{name: "executable path unknown", execErr: errors.New("boom"), openErr: nil, want: deploymentUnknown},
+		{name: "writable executable", execErr: nil, openErr: nil, want: deploymentBinary},
+		{name: "permission denied", execErr: nil, openErr: fs.ErrPermission, want: deploymentManaged},
+		{name: "other open error fails safe to managed", execErr: nil, openErr: errors.New("read-only file system"), want: deploymentManaged},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyOpenResult(tt.execErr, tt.openErr); got != tt.want {
+				t.Errorf("classifyOpenResult(%v, %v) = %v, want %v", tt.execErr, tt.openErr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpdateCommandFor(t *testing.T) {
+	tests := []struct {
+		name string
+		kind DeploymentKind
+		want func(cmd string) bool
+	}{
+		// managed covers both a container AND a hardened systemd service
+		// (root-owned binary, e.g. ProtectSystem=strict) — two setups with no
+		// shared update command. Guessing one (e.g. "docker compose pull")
+		// would mis-advise the other, so this must be exactly "".
+		{name: "managed", kind: deploymentManaged, want: func(cmd string) bool {
+			return cmd == ""
+		}},
+		{name: "binary", kind: deploymentBinary, want: func(cmd string) bool {
+			return strings.Contains(cmd, "systemctl") && strings.Contains(cmd, "install")
+		}},
+		{name: "unknown", kind: deploymentUnknown, want: func(cmd string) bool {
+			return cmd == ""
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := updateCommandFor(tt.kind)
+			if !tt.want(got) {
+				t.Errorf("updateCommandFor(%v) = %q, did not satisfy expectation", tt.kind, got)
+			}
+			if strings.Contains(got, "\n") {
+				t.Errorf("updateCommandFor(%v) = %q, contains a newline; the UI copies it as one line", tt.kind, got)
+			}
+		})
+	}
+
+	// Regression guard for this amendment: managed must never carry a
+	// container-specific example, even if the equality check above is
+	// weakened by a future edit.
+	t.Run("managed never suggests docker", func(t *testing.T) {
+		got := updateCommandFor(deploymentManaged)
+		if strings.Contains(got, "docker") {
+			t.Errorf("updateCommandFor(managed) = %q, contains %q; managed also covers hardened systemd services with no docker compose file, so this command would mis-advise them", got, "docker")
+		}
+	})
+}
+
+func TestDeploymentFieldsAreSetWhenDisabled(t *testing.T) {
+	utils.InitCacheManager()
+	t.Setenv("UPDATE_CHECK_ENABLED", "")
+
+	originalAppVersion := AppVersion
+	AppVersion = "3.3.0"
+	t.Cleanup(func() { AppVersion = originalAppVersion })
+
+	req := httptest.NewRequest(http.MethodGet, "/update-check", nil)
+	w := httptest.NewRecorder()
+
+	(&Update{}).Get(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var got UpdateCheck
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if got.Enabled {
+		t.Errorf("expected enabled=false, got true")
+	}
+	if got.Deployment == "" {
+		t.Errorf("expected a non-empty deployment kind even when update checks are disabled, got %q", got.Deployment)
 	}
 }

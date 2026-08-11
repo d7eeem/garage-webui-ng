@@ -130,6 +130,12 @@ API_BASE_URL=http://127.0.0.1:3903 S3_ENDPOINT_URL=http://127.0.0.1:3900 ./garag
 
 The user database is created at `./data/garage-webui-ng.db` relative to the working directory; set `DB_PATH` to put it somewhere durable. On first start, open the UI and complete the setup wizard.
 
+### Updating
+
+**The app never updates itself.** It holds your Garage admin token, and downloading and executing code inside that process is a risk this project deliberately does not take — releases aren't published with checksums or signatures yet, so there is no safe way to verify what would be fetched.
+
+Instead, the **About** tab (Settings → About) shows the version you're running and whether a newer release exists (set `UPDATE_CHECK_ENABLED=true` to enable that check). If it detects that the running executable is writable, it also shows the exact `systemctl stop` / `install` / `systemctl start` sequence for a binary install. Otherwise — a container image, or a hardened service whose binary it cannot write — it just says the deployment is updated from outside the app, since a container and a locked-down systemd service are updated differently and there's no way to safely guess which one you're running.
+
 ## 🐳 Docker Deployment
 
 The image is multi-arch (`linux/amd64`, `linux/arm64`), runs as a **non-root** user (uid/gid `65532`), exposes a **healthcheck**, and shuts down gracefully on `SIGTERM`.
