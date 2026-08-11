@@ -1,18 +1,9 @@
 import { Alert, Loading, Table } from "react-daisyui";
 import { useBrowseObjects } from "./hooks";
 import { dayjs, readableBytes } from "@/lib/utils";
-import mime from "mime/lite";
 import { Object } from "./types";
 import { API_URL } from "@/lib/api";
-import {
-  ChevronDown,
-  ChevronUp,
-  CircleXIcon,
-  FileArchive,
-  FileIcon,
-  FileType,
-  Folder,
-} from "lucide-react";
+import { ChevronDown, ChevronUp, CircleXIcon, Folder } from "lucide-react";
 import { useBucketContext } from "../context";
 import ObjectActions from "./object-actions";
 import GotoTopButton from "@/components/ui/goto-top-btn";
@@ -22,6 +13,7 @@ import { Dispatch, ReactNode, SetStateAction, useMemo, useState } from "react";
 import { useConfig } from "@/hooks/useConfig";
 import { getPublicAccess } from "@/lib/website";
 import { classifyMedia, mediaViewer } from "./media-viewer";
+import { iconForObjectKey } from "./file-icons";
 import {
   DEFAULT_SORT,
   SortColumn,
@@ -251,7 +243,7 @@ const ObjectList = ({
                   onClick={() => onObjectClick(object)}
                 >
                   <span className="flex items-center font-normal w-full min-w-0">
-                    <FilePreview ext={ext?.substring(1)} object={object} />
+                    <FilePreview objectKey={object.objectKey} />
                     <span className="truncate min-w-0">{filename}</span>
                     {ext && (
                       <span className="text-base-content/60 shrink-0">{ext}</span>
@@ -344,40 +336,15 @@ const SortableHeader = ({ column, sort, onSort, children }: SortableHeaderProps)
 };
 
 type FilePreviewProps = {
-  ext?: string | null;
-  object: Object;
+  objectKey: string;
 };
 
-const FilePreview = ({ ext, object }: FilePreviewProps) => {
-  const type = mime.getType(ext || "")?.split("/")[0];
-  let Icon = FileIcon;
-
-  if (
-    ["zip", "rar", "7z", "iso", "tar", "gz", "bz2", "xz"].includes(ext || "")
-  ) {
-    Icon = FileArchive;
-  }
-
-  if (type === "image") {
-    const thumbnailSupport = ["jpg", "jpeg", "png", "gif"].includes(ext || "");
-    // object.url arrives percent-encoded from the API; do not re-encode.
-    return (
-      <img
-        src={API_URL + object.url + (thumbnailSupport ? "?thumb=1" : "?view=1")}
-        alt={object.objectKey}
-        className="size-5 object-cover overflow-hidden mr-2"
-      />
-    );
-  }
-
-  if (type === "text") {
-    Icon = FileType;
-  }
-
+const FilePreview = ({ objectKey }: FilePreviewProps) => {
+  const Icon = iconForObjectKey(objectKey);
   return (
     <Icon
       size={20}
-      className="text-base-content/60 group-hover:text-neutral-content/80 mr-2"
+      className="text-base-content/60 group-hover:text-neutral-content/80 mr-2 shrink-0"
     />
   );
 };

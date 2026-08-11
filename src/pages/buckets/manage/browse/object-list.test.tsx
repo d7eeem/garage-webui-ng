@@ -178,6 +178,33 @@ describe("ObjectList", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders a generic icon for an image object instead of fetching a thumbnail", () => {
+    // Regression guard for plan 047: row previews used to be an <img> that
+    // downloaded the object itself (the whole file for anything the backend
+    // couldn't thumbnail). If this test is missing, that regressed silently.
+    mockBrowse.data = {
+      pages: [
+        {
+          prefixes: [],
+          objects: [
+            {
+              objectKey: "photo.png",
+              lastModified: new Date("2026-01-01T00:00:00Z"),
+              size: 4321,
+              url: "/photo.png",
+            },
+          ],
+          prefix: "",
+          nextToken: null,
+        },
+      ],
+    };
+    const { container } = renderList();
+
+    expect(screen.getByText("photo")).toBeInTheDocument();
+    expect(container.querySelector("img")).toBeNull();
+  });
+
   it("reorders the rendered rows when the Size header is clicked", () => {
     mockBrowse.data = multiObjectPage();
     renderList();
