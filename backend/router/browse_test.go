@@ -615,6 +615,126 @@ func TestStripCommonKeyPrefix(t *testing.T) {
 	})
 }
 
+func TestSafeZipEntryName(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		want    string
+		changed bool
+	}{
+		{"plain relative path is untouched", "a/b.txt", "a/b.txt", false},
+		{"leading .. segments are dropped", "../../etc/passwd", "etc/passwd", true},
+		{"leading slash is dropped", "/etc/passwd", "etc/passwd", true},
+		{"interior .. segments are dropped", "a/../../b.txt", "a/b.txt", true},
+		{"bare .. sanitises to empty", "..", "", true},
+		{"repeated .. sanitises to empty", "../..", "", true},
+		{"backslash traversal is normalized and dropped", "..\\..\\evil.exe", "evil.exe", true},
+		{"drive letter is dropped", "C:\\Windows\\x.txt", "Windows/x.txt", true},
+		{"UNC prefix is dropped", "\\\\server\\share\\x", "server/share/x", true},
+		{"dot segment is dropped", "a/./b.txt", "a/b.txt", true},
+		{"empty segment from double slash is dropped", "a//b.txt", "a/b.txt", true},
+		{"leading dots that are not exactly .. survive intact", "...hidden.txt", "...hidden.txt", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := safeZipEntryName(tc.input)
+			if got != tc.want || changed != tc.changed {
+				t.Errorf("safeZipEntryName(%q) = (%q, %v), want (%q, %v)", tc.input, got, changed, tc.want, tc.changed)
+			}
+		})
+	}
+}
+
+func TestArchiveEntryNames(t *testing.T) {
+	t.Run("no returned name can escape the extraction directory", func(t *testing.T) {
+		keys := []string{"../../etc/passwd", "/abs/x", "..\\..\\w.exe", "normal/key.txt"}
+		names, _ := archiveEntryNames(keys)
+		if len(names) != len(keys) {
+			t.Fatalf("archiveEntryNames(...) returned %d names, want %d", len(names), len(keys))
+		}
+		for k, name := range names {
+			if strings.Contains(name, "\\") {
+				t.Errorf("name for %q contains a backslash: %q", k, name)
+			}
+			for _, seg := range strings.Split(name, "/") {
+				if seg == "" {
+					t.Errorf("name for %q has an empty segment: %q", k, name)
+				}
+				if seg == ".." {
+					t.Errorf("name for %q has a %q segment: %q", k, "..", name)
+				}
+			}
+			if strings.HasPrefix(name, "/") {
+				t.Errorf("name for %q begins with '/': %q", k, name)
+			}
+		}
+	})
+
+	t.Run("colliding sanitised names get distinct suffixes", func(t *testing.T) {
+		// "../x.txt" sanitises to "x.txt" under the discard-only algorithm
+		// (only the exact ".." segment is dropped, nothing is resolved
+		// against a preceding segment), so this pair genuinely collides.
+		keys := []string{"x.txt", "../x.txt"}
+		names, _ := archiveEntryNames(keys)
+		if names["x.txt"] == names["../x.txt"] {
+			t.Fatalf("archiveEntryNames(...) = %v, want distinct names for colliding keys", names)
+		}
+		if names["../x.txt"] != "x (2).txt" {
+			t.Errorf("archiveEntryNames(...)[%q] = %q, want %q", "../x.txt", names["../x.txt"], "x (2).txt")
+		}
+	})
+
+	t.Run("every key gets a name and no two keys share one", func(t *testing.T) {
+		keys := []string{"a.txt", "b.txt", "../a.txt", "sub/a.txt"}
+		names, _ := archiveEntryNames(keys)
+		if len(names) != len(keys) {
+			t.Fatalf("archiveEntryNames(...) returned %d names, want %d", len(names), len(keys))
+		}
+		seen := make(map[string]bool, len(names))
+		for _, name := range names {
+			seen[name] = true
+		}
+		if len(seen) != len(names) {
+			t.Errorf("archiveEntryNames(...) = %v, want all names distinct", names)
+		}
+	})
+
+	t.Run("renamed lists exactly the keys whose name changed", func(t *testing.T) {
+		keys := []string{"p/q/a.txt", "p/q/b.txt", "../evil.txt"}
+		_, renamed := archiveEntryNames(keys)
+		want := map[string]bool{"../evil.txt": true}
+		got := make(map[string]bool, len(renamed))
+		for _, k := range renamed {
+			got[k] = true
+		}
+		if len(got) != len(want) || !got["../evil.txt"] {
+			t.Errorf("archiveEntryNames(...) renamed = %v, want only %v", renamed, want)
+		}
+	})
+
+	t.Run("ordinary keys are unaffected and renamed is empty", func(t *testing.T) {
+		keys := []string{"p/q/a.txt", "p/q/b.txt"}
+		names, renamed := archiveEntryNames(keys)
+		if names["p/q/a.txt"] != "a.txt" || names["p/q/b.txt"] != "b.txt" {
+			t.Errorf("archiveEntryNames(...) = %v, want the common-prefix trim preserved", names)
+		}
+		if len(renamed) != 0 {
+			t.Errorf("archiveEntryNames(...) renamed = %v, want empty", renamed)
+		}
+	})
+
+	t.Run("a key that sanitises to nothing gets the unnamed placeholder", func(t *testing.T) {
+		names, renamed := archiveEntryNames([]string{"../.."})
+		if names["../.."] != "unnamed" {
+			t.Errorf("archiveEntryNames(...)[%q] = %q, want %q", "../..", names["../.."], "unnamed")
+		}
+		if len(renamed) != 1 || renamed[0] != "../.." {
+			t.Errorf("archiveEntryNames(...) renamed = %v, want [%q]", renamed, "../..")
+		}
+	})
+}
+
 // withDownloadSession seeds an authenticated session (username only — this
 // package's handlers under test don't consult "authenticated"/"role") inside
 // the scs middleware, then runs fn with a request sharing that context, so fn

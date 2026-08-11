@@ -559,7 +559,7 @@ func (b *Browse) DownloadArchive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", contentDispositionAttachment(bucket+"-objects.zip"))
 	w.Header().Set("Cache-Control", "no-store")
 
-	entryNames := stripCommonKeyPrefix(dl.Keys)
+	entryNames, renamedEntries := archiveEntryNames(dl.Keys)
 
 	// From here on the status is committed — see the function comment.
 	zw := zip.NewWriter(w)
@@ -607,6 +607,17 @@ func (b *Browse) DownloadArchive(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if len(renamedEntries) > 0 {
+		if entryWriter, err := zw.Create("RENAMED-ENTRIES.txt"); err == nil {
+			body := "These object keys contained path segments that are unsafe inside an archive\n" +
+				"(for example \"..\", a leading \"/\", or a drive letter), or collided with another\n" +
+				"entry. They were renamed so that extracting this archive cannot write outside\n" +
+				"the directory you extract it into. The objects themselves are unchanged.\n\n" +
+				strings.Join(renamedEntries, "\n") + "\n"
+			io.WriteString(entryWriter, body)
+		}
+	}
+
 	// zw.Close's error is best-effort: the client may have already
 	// disconnected, and the HTTP status is already committed either way.
 	_ = zw.Close()
@@ -631,6 +642,95 @@ func stripCommonKeyPrefix(keys []string) map[string]string {
 		entries[k] = name
 	}
 	return entries
+}
+
+// safeZipEntryName converts a proposed archive entry name into one that can
+// only ever extract *inside* the extraction directory.
+//
+// Object keys are arbitrary UTF-8 and are attacker-controlled: anyone with S3
+// write access to the bucket — not necessarily a user of this console — can
+// store an object literally named "../../../.ssh/authorized_keys". Writing that
+// verbatim into a zip makes THIS SERVICE the producer of a zip-slip archive,
+// with our own operator as the victim when they extract it. Some extractors
+// strip such names; we do not get to depend on which tool the operator uses.
+//
+// The rules, in order:
+//   - backslashes become forward slashes (Windows extractors treat "\" as a
+//     separator, so "..\..\x" is the same attack in a different costume)
+//   - a leading drive letter ("C:") or UNC prefix is dropped
+//   - the path is split on "/" and every "", "." and ".." segment is discarded,
+//     which also makes the result relative
+//   - segments are rejoined with "/"
+//
+// Returns the safe name and whether anything was changed. An input that
+// sanitises away to nothing returns ("", true); the caller substitutes a
+// placeholder — see archiveEntryNames.
+func safeZipEntryName(name string) (string, bool) {
+	normalized := strings.ReplaceAll(name, "\\", "/")
+
+	segments := strings.Split(normalized, "/")
+	safe := make([]string, 0, len(segments))
+	for i, seg := range segments {
+		if i == 0 && strings.HasSuffix(seg, ":") {
+			// Drive letter (e.g. "C:") or similar — drop it.
+			continue
+		}
+		if seg == "" || seg == "." || seg == ".." {
+			continue
+		}
+		safe = append(safe, seg)
+	}
+
+	result := strings.Join(safe, "/")
+	return result, result != name
+}
+
+// archiveEntryNames maps each object key to the name it will carry inside the
+// archive: the existing common-prefix trim, then safeZipEntryName, then
+// de-duplication.
+//
+// De-duplication is a security requirement, not tidiness. Two distinct keys can
+// sanitise to the same name ("a/../x.txt" and "x.txt" both become "x.txt"), and
+// a zip holding two entries with one name extracts by overwriting — an
+// overwrite primitive inside the target directory, and plain data loss even
+// for benign keys.
+//
+// Iterates `keys` in order so the result is deterministic; the returned
+// `renamed` slice lists every key whose name had to change, for the archive's
+// notes file.
+func archiveEntryNames(keys []string) (names map[string]string, renamed []string) {
+	base := stripCommonKeyPrefix(keys)
+	names = make(map[string]string, len(keys))
+	used := make(map[string]bool, len(keys))
+
+	for _, k := range keys {
+		candidate, changed := safeZipEntryName(base[k])
+		if candidate == "" {
+			candidate = "unnamed"
+			changed = true
+		}
+
+		final := candidate
+		if used[final] {
+			ext := path.Ext(candidate)
+			stem := strings.TrimSuffix(candidate, ext)
+			for n := 2; ; n++ {
+				final = fmt.Sprintf("%s (%d)%s", stem, n, ext)
+				if !used[final] {
+					break
+				}
+			}
+			changed = true
+		}
+
+		used[final] = true
+		names[k] = final
+		if changed {
+			renamed = append(renamed, k)
+		}
+	}
+
+	return names, renamed
 }
 
 // commonDirPrefix returns the longest prefix shared by every key, trimmed
