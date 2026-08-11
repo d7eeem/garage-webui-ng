@@ -11,6 +11,8 @@ export type UpdateCheck = {
   url?: string;
   updateAvailable?: boolean;
   checkFailed?: boolean;
+  deployment?: "binary" | "managed" | "unknown";
+  updateCommand?: string;
 };
 
 type Options = UseMutationOptions<unknown, Error, ChangePasswordSchema>;

@@ -1,4 +1,7 @@
 import { useConfig } from "@/hooks/useConfig";
+import { copyToClipboard } from "@/lib/utils";
+import Button from "@/components/ui/button";
+import { Copy } from "lucide-react";
 import { Card } from "react-daisyui";
 import { useUpdateCheck } from "./hooks";
 
@@ -43,6 +46,26 @@ const AboutTab = () => {
               </>
             ) : null}
           </p>
+        ) : null}
+
+        {update?.updateCommand ? (
+          <div className="mt-2">
+            <p className="text-sm text-base-content/60">
+              To update this deployment:
+            </p>
+            <div className="relative">
+              <code className="block whitespace-pre-wrap break-all rounded bg-base-200 p-2 text-xs pr-10">
+                {update.updateCommand}
+              </code>
+              <Button
+                icon={Copy}
+                className="absolute right-0 top-0"
+                color="ghost"
+                aria-label="Copy update command"
+                onClick={() => copyToClipboard(update.updateCommand || "")}
+              />
+            </div>
+          </div>
         ) : null}
 
         {update && !update.enabled ? (

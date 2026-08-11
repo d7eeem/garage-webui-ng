@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +43,12 @@ type UpdateCheck struct {
 	URL             string `json:"url,omitempty"`
 	UpdateAvailable bool   `json:"updateAvailable,omitempty"`
 	CheckFailed     bool   `json:"checkFailed,omitempty"`
+	// Deployment is how this instance should be updated: "binary", "managed"
+	// or "unknown". See detectDeployment.
+	Deployment string `json:"deployment,omitempty"`
+	// UpdateCommand is the shell command an operator runs to update THIS
+	// deployment. Informational only — this service never executes it.
+	UpdateCommand string `json:"updateCommand,omitempty"`
 }
 
 type Update struct{}
@@ -56,13 +63,26 @@ type githubRelease struct {
 func (u *Update) Get(w http.ResponseWriter, r *http.Request) {
 	current := AppVersion
 
+	// Computed per request, never cached: a redeploy or a permissions change
+	// must be reflected immediately, not after the 6h update-check cache
+	// expires. See detectDeployment.
+	deployment := detectDeployment()
+	updateCommand := updateCommandFor(deployment)
+
 	if utils.GetEnv("UPDATE_CHECK_ENABLED", "false") != "true" {
-		utils.ResponseSuccess(w, UpdateCheck{Enabled: false, Current: current})
+		utils.ResponseSuccess(w, UpdateCheck{
+			Enabled:       false,
+			Current:       current,
+			Deployment:    string(deployment),
+			UpdateCommand: updateCommand,
+		})
 		return
 	}
 
 	if cached := utils.Cache.Get(updateCacheKey); cached != nil {
 		if result, ok := cached.(UpdateCheck); ok {
+			result.Deployment = string(deployment)
+			result.UpdateCommand = updateCommand
 			utils.ResponseSuccess(w, result)
 			return
 		}
@@ -71,7 +91,13 @@ func (u *Update) Get(w http.ResponseWriter, r *http.Request) {
 	release, err := fetchLatestRelease(r.Context())
 	if err != nil {
 		log.Printf("update check: %v", err)
-		result := UpdateCheck{Enabled: true, Current: current, CheckFailed: true}
+		result := UpdateCheck{
+			Enabled:       true,
+			Current:       current,
+			CheckFailed:   true,
+			Deployment:    string(deployment),
+			UpdateCommand: updateCommand,
+		}
 		// Deliberately not cached: a transient GitHub outage should not force
 		// every viewer to see "check failed" for a further 6 hours once GitHub
 		// recovers.
@@ -87,6 +113,10 @@ func (u *Update) Get(w http.ResponseWriter, r *http.Request) {
 		UpdateAvailable: isNewer(current, release.TagName),
 	}
 	utils.Cache.Set(updateCacheKey, result, updateCacheTTL)
+	// Set after caching so the cached value never carries a deployment
+	// snapshot — see the per-request comment above.
+	result.Deployment = string(deployment)
+	result.UpdateCommand = updateCommand
 	utils.ResponseSuccess(w, result)
 }
 
@@ -182,4 +212,72 @@ func parseNumericVersion(v string) ([]int, bool) {
 		parts[i] = n
 	}
 	return parts, true
+}
+
+// DeploymentKind describes how this instance was deployed, to the only degree
+// of precision that matters: whether the operator updates it in place or from
+// outside.
+type DeploymentKind string
+
+const (
+	// deploymentBinary: the running executable is writable by this process's
+	// user, so the operator replaces the file and restarts the service.
+	deploymentBinary DeploymentKind = "binary"
+	// deploymentManaged: the executable is not writable by us — a container
+	// image, or a service whose binary is root-owned or on a read-only mount.
+	// The operator updates it from outside.
+	deploymentManaged DeploymentKind = "managed"
+	// deploymentUnknown: we could not determine our own path.
+	deploymentUnknown DeploymentKind = "unknown"
+)
+
+// detectDeployment reports how this instance should be updated.
+//
+// It deliberately does NOT try to answer "am I in Docker?" — that is
+// unreliable across Docker, podman, Kubernetes and nerdctl, and it is the wrong
+// question. The question that decides the advice is whether we could replace
+// our own executable at all, so that is what we test: can the current user
+// write the file we are running from?
+//
+// Fails to "managed" on any doubt: telling a container operator to overwrite a
+// binary is worse advice than telling a binary operator to check their setup.
+func detectDeployment() DeploymentKind {
+	path, execErr := os.Executable()
+	if execErr != nil {
+		return classifyOpenResult(execErr, nil)
+	}
+
+	// Open for write and immediately close; never truncate, never write a
+	// byte. This is a probe, not a mutation.
+	f, openErr := os.OpenFile(path, os.O_WRONLY, 0)
+	if openErr == nil {
+		f.Close()
+	}
+	return classifyOpenResult(nil, openErr)
+}
+
+// classifyOpenResult turns the outcome of the write-probe into a kind.
+func classifyOpenResult(execErr, openErr error) DeploymentKind {
+	if execErr != nil {
+		return deploymentUnknown
+	}
+	if openErr != nil {
+		// Fail safe: any open error (permission denied, read-only mount, or
+		// anything else) is treated as "managed", never "binary".
+		return deploymentManaged
+	}
+	return deploymentBinary
+}
+
+// updateCommandFor returns the shell command that updates a deployment of the
+// given kind. Informational only: nothing in this service ever runs it.
+func updateCommandFor(kind DeploymentKind) string {
+	switch kind {
+	case deploymentManaged:
+		return "docker compose pull && docker compose up -d"
+	case deploymentBinary:
+		return "sudo systemctl stop garage-webui && sudo install -m 0755 ./garage-webui-ng /usr/local/bin/garage-webui-ng && sudo systemctl start garage-webui"
+	default:
+		return ""
+	}
 }

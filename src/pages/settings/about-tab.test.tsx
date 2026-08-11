@@ -14,6 +14,8 @@ const mockData = vi.hoisted(() => ({
         url?: string;
         updateAvailable?: boolean;
         checkFailed?: boolean;
+        deployment?: "binary" | "managed" | "unknown";
+        updateCommand?: string;
       }
     | undefined,
 }));
@@ -26,10 +28,21 @@ vi.mock("./hooks", () => ({
   useUpdateCheck: () => ({ data: mockData.update }),
 }));
 
+const mockCopyToClipboard = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/utils")>();
+  return {
+    ...actual,
+    copyToClipboard: mockCopyToClipboard,
+  };
+});
+
 describe("AboutTab", () => {
   beforeEach(() => {
     mockData.config = undefined;
     mockData.update = undefined;
+    mockCopyToClipboard.mockClear();
   });
 
   it("renders the version from config", () => {
@@ -88,5 +101,59 @@ describe("AboutTab", () => {
     render(<AboutTab />);
 
     expect(screen.getByText(/Update checks are off/)).toBeInTheDocument();
+  });
+
+  it("renders the update command when present", () => {
+    mockData.config = { version: "v3.3.0" };
+    mockData.update = {
+      enabled: false,
+      current: "v3.3.0",
+      deployment: "managed",
+      updateCommand: "docker compose pull && docker compose up -d",
+    };
+
+    render(<AboutTab />);
+
+    expect(screen.getByText(/To update this deployment/)).toBeInTheDocument();
+    expect(
+      screen.getByText("docker compose pull && docker compose up -d")
+    ).toBeInTheDocument();
+  });
+
+  it("renders no command block when updateCommand is absent or empty", () => {
+    mockData.config = { version: "v3.3.0" };
+    mockData.update = {
+      enabled: false,
+      current: "v3.3.0",
+      deployment: "unknown",
+      updateCommand: "",
+    };
+
+    render(<AboutTab />);
+
+    expect(
+      screen.queryByText(/To update this deployment/)
+    ).not.toBeInTheDocument();
+  });
+
+  it("copies the exact update command when the copy button is clicked", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    mockData.config = { version: "v3.3.0" };
+    mockData.update = {
+      enabled: false,
+      current: "v3.3.0",
+      deployment: "binary",
+      updateCommand:
+        "sudo systemctl stop garage-webui && sudo install -m 0755 ./garage-webui-ng /usr/local/bin/garage-webui-ng && sudo systemctl start garage-webui",
+    };
+
+    render(<AboutTab />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Copy update command"));
+
+    expect(mockCopyToClipboard).toHaveBeenCalledWith(
+      "sudo systemctl stop garage-webui && sudo install -m 0755 ./garage-webui-ng /usr/local/bin/garage-webui-ng && sudo systemctl start garage-webui"
+    );
   });
 });
