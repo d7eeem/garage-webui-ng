@@ -11,7 +11,7 @@ package main
 //
 // To configure: run `go run ./cmd/relsign keygen`, put the private key in the
 // GitHub secret, and paste the public key here.
-var releasePublicKey = "131864d1cf4293cfb619892e2fa0d85386e857fb44d1d96188d7bf86c72d7241"
+var releasePublicKey = "aa389a5db36362a12ea15454dae41a68b9496287770299d8590bd782d1c74c26"
 
 // ReleasePublicKey returns the configured release-signing public key, or "" if
 // this build has none.
