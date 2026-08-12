@@ -157,8 +157,8 @@ Both must pass. Step 1 alone only proves the binary matches the checksum file �
 
 **One-time setup for maintainers (already done for this repository — documented for anyone forking or rotating the key):**
 
-1. From `backend/`, run `go run ./cmd/relsign keygen`. It prints a private key (hex) to stdout and a public key (hex) to stderr.
-2. Store the private key as the repository secret `RELEASE_SIGNING_KEY`. **Never commit it, paste it into an issue/PR, or let it appear in a log** — the release workflow reads it only from that secret, and `relsign sign` only reads it from an environment variable, never a command-line flag, precisely so it can't leak into CI logs or the process table.
+1. From `backend/`, run `go run ./cmd/relsign keygen`. **stdout carries only the bare private key hex** — nothing else — so it's safe to pipe straight into a secret store; a labelled public key (plus a reminder note) is printed to stderr instead.
+2. Pipe stdout straight into the repository secret, e.g. `go run ./cmd/relsign keygen 2>pub.txt | gh secret set RELEASE_SIGNING_KEY`. **Never commit the private key, paste it into an issue/PR, or let it appear in a log** — the release workflow reads it only from that secret, and `relsign sign` only reads it from an environment variable, never a command-line flag, precisely so it can't leak into CI logs or the process table. Do not add a label or any other text when storing it — anything besides the bare hex will fail to decode (this broke a release once).
 3. Paste the public key into `releasePublicKey` in `backend/release_key.go` and commit that (the public key is not a secret).
 
 **Losing the private key** means rotating it: generate a new pair, update the `RELEASE_SIGNING_KEY` secret and `backend/release_key.go`, and note the rotation in the release notes. Older binaries built with the previous public key baked in will not be able to verify releases signed with the new key — there is no fallback to "unsigned but trusted anyway," by design.

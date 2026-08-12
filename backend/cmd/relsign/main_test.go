@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -223,10 +224,10 @@ func TestVerifyRejectsMalformedPublicKey(t *testing.T) {
 }
 
 // TestKeygenProducesValidKeypair runs the keygen subcommand and checks that
-// the labelled hex values it prints decode to correctly-sized ed25519 keys
-// that actually work together. Output is captured into in-memory buffers
-// only — never printed, logged, or written to a file — and the key material
-// is discarded at the end of the test, per the "ephemeral, in-memory only"
+// the hex values it prints decode to correctly-sized ed25519 keys that
+// actually work together. Output is captured into in-memory buffers only —
+// never printed, logged, or written to a file — and the key material is
+// discarded at the end of the test, per the "ephemeral, in-memory only"
 // rule for keys generated during testing.
 func TestKeygenProducesValidKeypair(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -234,8 +235,11 @@ func TestKeygenProducesValidKeypair(t *testing.T) {
 		t.Fatalf("keygen: %v", err)
 	}
 
-	privHex := extractHexAfterColon(t, stdout.String())
-	pubHex := extractHexAfterColon(t, stderr.String())
+	privHex := strings.TrimSpace(stdout.String())
+	// stderr now has more than one line (the labelled public key, then a
+	// reminder note) — the public key is on the first line.
+	stderrFirstLine, _, _ := strings.Cut(stderr.String(), "\n")
+	pubHex := extractHexAfterColon(t, stderrFirstLine)
 
 	privBytes, err := hex.DecodeString(privHex)
 	if err != nil {
@@ -258,6 +262,129 @@ func TestKeygenProducesValidKeypair(t *testing.T) {
 	sig := ed25519.Sign(ed25519.PrivateKey(privBytes), msg)
 	if !ed25519.Verify(ed25519.PublicKey(pubBytes), msg, sig) {
 		t.Fatal("printed private/public keys are not a matching pair")
+	}
+}
+
+// stdoutHexPattern matches exactly 64 bytes of lowercase hex (the encoded
+// size of an ed25519 private key) and nothing else.
+var stdoutHexPattern = regexp.MustCompile(`^[0-9a-f]{128}$`)
+
+// TestKeygenStdoutIsBareHex is the regression guard for the bug that broke
+// the v3.7.0 release: a label on stdout got piped into the
+// RELEASE_SIGNING_KEY secret and corrupted it. stdout must carry nothing
+// but the bare private key hex, on one line.
+func TestKeygenStdoutIsBareHex(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := runKeygen(nil, &stdout, &stderr); err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+
+	trimmed := strings.TrimSpace(stdout.String())
+	if !stdoutHexPattern.MatchString(trimmed) {
+		t.Fatalf("stdout must be exactly 128 lowercase hex characters and nothing else, got %q", stdout.String())
+	}
+}
+
+// TestKeygenStdoutRoundTripsThroughDecode proves the pipe-to-secret path
+// works end to end without a human in the middle: whatever keygen printed
+// to stdout, fed straight into decodePrivateKey (as a secret store would
+// hand it back), must decode without error.
+func TestKeygenStdoutRoundTripsThroughDecode(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := runKeygen(nil, &stdout, &stderr); err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+
+	stdoutValue := strings.TrimSpace(stdout.String())
+	if _, err := decodePrivateKey(stdoutValue); err != nil {
+		t.Fatalf("decodePrivateKey(stdout output) = %v, want no error", err)
+	}
+}
+
+// TestKeygenStderrCarriesPublicKeyOnly checks that stderr contains the
+// public key but never the private key hex — a copy-paste slip that also
+// printed the private half to stderr would otherwise pass unnoticed.
+func TestKeygenStderrCarriesPublicKeyOnly(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := runKeygen(nil, &stdout, &stderr); err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+
+	privHex := strings.TrimSpace(stdout.String())
+	stderrText := stderr.String()
+
+	if !strings.Contains(stderrText, "PUBLIC KEY") {
+		t.Fatalf("expected stderr to contain a labelled public key line, got %q", stderrText)
+	}
+	if strings.Contains(stderrText, privHex) {
+		t.Fatalf("stderr must never contain the private key hex, but it did: stderr=%q priv=%q", stderrText, privHex)
+	}
+}
+
+// TestDecodeKeyToleratesSurroundingWhitespace checks that a secret store or
+// shell pipeline appending a newline (or a copy-paste adding a leading
+// space) doesn't break decoding — trimming removes a whole class of
+// unreproducible support problem.
+func TestDecodeKeyToleratesSurroundingWhitespace(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	privHex := hex.EncodeToString(priv)
+	pubHex := hex.EncodeToString(pub)
+
+	variants := []struct {
+		name string
+		wrap func(s string) string
+	}{
+		{"trailing-newline", func(s string) string { return s + "\n" }},
+		{"leading-space", func(s string) string { return " " + s }},
+		{"leading-and-trailing", func(s string) string { return " " + s + "\n" }},
+	}
+
+	for _, v := range variants {
+		t.Run("private/"+v.name, func(t *testing.T) {
+			if _, err := decodePrivateKey(v.wrap(privHex)); err != nil {
+				t.Fatalf("decodePrivateKey(%q) = %v, want no error", v.wrap(privHex), err)
+			}
+		})
+		t.Run("public/"+v.name, func(t *testing.T) {
+			if _, err := decodePublicKey(v.wrap(pubHex)); err != nil {
+				t.Fatalf("decodePublicKey(%q) = %v, want no error", v.wrap(pubHex), err)
+			}
+		})
+	}
+}
+
+// TestDecodeKeyRejectsInteriorWhitespace ensures TrimSpace only strips
+// leading/trailing whitespace — a space inserted in the middle of a key is
+// a corrupt key, not a formatting artefact, and must still be rejected.
+func TestDecodeKeyRejectsInteriorWhitespace(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	privHex := hex.EncodeToString(priv)
+	pubHex := hex.EncodeToString(pub)
+
+	mid := len(privHex) / 2
+	brokenPriv := privHex[:mid] + " " + privHex[mid:]
+	if _, err := decodePrivateKey(brokenPriv); err == nil {
+		t.Fatal("decodePrivateKey with interior whitespace should fail, got nil error")
+	}
+
+	mid = len(pubHex) / 2
+	brokenPub := pubHex[:mid] + " " + pubHex[mid:]
+	if _, err := decodePublicKey(brokenPub); err == nil {
+		t.Fatal("decodePublicKey with interior whitespace should fail, got nil error")
 	}
 }
 
