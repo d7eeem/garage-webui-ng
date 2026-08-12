@@ -43,6 +43,10 @@ func HandleApiRouter() *http.ServeMux {
 	// outbound requests to GitHub.
 	update := &Update{}
 	router.HandleFunc("GET /update-check", update.Get)
+	// /update/apply is a write endpoint: it inherits CSRF from the inner
+	// router like every other write here, and its own requireAdmin call (not
+	// the /admin/ prefix) is what makes it admin-only — see selfupdate.go.
+	router.HandleFunc("POST /update/apply", update.Apply)
 
 	buckets := &Buckets{}
 	router.HandleFunc("GET /buckets", buckets.GetAll)

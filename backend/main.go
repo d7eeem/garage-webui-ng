@@ -69,6 +69,12 @@ func main() {
 	// through GET /config and GET /update-check is pushed in here.
 	router.AppVersion = Version()
 
+	// Same reason: the release-signing public key lives in release_key.go
+	// (package main) and router.ReleasePublicKey is how selfupdate.go reaches
+	// it. An empty value here means the build cannot verify a release, and
+	// every self-update path must refuse to run rather than skip verification.
+	router.ReleasePublicKey = ReleasePublicKey()
+
 	if err := utils.Garage.LoadConfig(); err != nil {
 		log.Println("Cannot load garage config!", err)
 	}

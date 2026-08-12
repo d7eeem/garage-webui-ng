@@ -132,9 +132,24 @@ The user database is created at `./data/garage-webui-ng.db` relative to the work
 
 ### Updating
 
-**The app never updates itself.** It holds your Garage admin token, and downloading and executing code inside that process is a risk this project deliberately does not take. Releases are now checksummed and signed (see **Verifying a release** below) so a download can be checked before you trust it, but the app itself does not fetch or run that download for you — you still fetch and swap the binary, or update the container image, yourself.
+The app holds your Garage admin token, so downloading and executing code inside that process is a risk this project treats carefully: by default it does not do it for you. Releases are checksummed and signed (see **Verifying a release** below), and a binary install with a signing key configured can optionally verify and stage an update itself from the UI — see **In-browser update** below — but nothing is ever installed without an explicit, fail-closed signature and checksum check, and the process never restarts itself unless you separately ask it to.
 
-Instead, the **About** tab (Settings → About) shows the version you're running and whether a newer release exists (set `UPDATE_CHECK_ENABLED=true` to enable that check). If it detects that the running executable is writable, it also shows the exact `systemctl stop` / `install` / `systemctl start` sequence for a binary install. Otherwise — a container image, or a hardened service whose binary it cannot write — it just says the deployment is updated from outside the app, since a container and a locked-down systemd service are updated differently and there's no way to safely guess which one you're running.
+The **About** tab (Settings → About) shows the version you're running and whether a newer release exists (set `UPDATE_CHECK_ENABLED=true` to enable that check). If it detects that the running executable is writable, it also shows the exact `systemctl stop` / `install` / `systemctl start` sequence for a binary install, alongside the in-browser **Update now** button when this build can use it. Otherwise — a container image, or a hardened service whose binary it cannot write — it just says the deployment is updated from outside the app, since a container and a locked-down systemd service are updated differently and there's no way to safely guess which one you're running.
+
+### In-browser update
+
+A binary install whose build has a release signing key configured can update itself from Settings → About, with an **admin-only** "Update now" button:
+
+1. Downloads the release binary, `SHA256SUMS`, and `SHA256SUMS.sig` for the newer version already shown in that tab.
+2. Verifies the ed25519 signature over `SHA256SUMS` against the build's configured public key **first** — `SHA256SUMS` is treated as untrusted input until that check passes, since it is otherwise attacker-controlled.
+3. Only then checks the downloaded binary's SHA-256 against the matching entry in `SHA256SUMS`.
+4. If both checks pass, atomically replaces the running executable on disk, keeping the previous binary at `<path>.bak` as a manual rollback.
+
+Any failure — an unconfigured signing key, a bad signature, a checksum mismatch, or a filesystem error — aborts with nothing installed and nothing left behind. There is no way to skip verification; an unconfigured signing key simply disables the feature rather than falling back to an unverified install.
+
+**A restart is required to run the staged binary, and the app does not do this for you by default.** The process that just downloaded the update cannot reliably restart itself — if it exits and nothing is configured to bring it back, the only way back in is SSH. So the default request only swaps the binary; the running process keeps serving the old version until you restart the service. A separate, unchecked-by-default "restart automatically" option will make the process trigger its own graceful shutdown after a successful swap, but only use it if your service manager (systemd, Docker's restart policy, etc.) is actually configured to bring the process back up — otherwise that option takes your console down.
+
+**Docker deployments cannot use this** — the executable lives inside the image and isn't writable by the running container in any way this feature will use. Pull a new image instead (see **Docker Deployment** below).
 
 ### Verifying a release
 
@@ -322,6 +337,7 @@ The backend serves everything under `/api`. It is primarily a **gateway to Garag
 |---|---|---|
 | `GET` | `/api/config` | Browser-safe subset of the Garage config (no secrets), plus the running app version. |
 | `GET` | `/api/update-check` | Whether a newer release exists. Disabled unless `UPDATE_CHECK_ENABLED=true`. |
+| `POST` | `/api/update/apply` | Admin-only. Downloads, verifies and stages a newer release binary — see **In-browser update**. |
 | `GET` | `/api/metrics` | Parsed Prometheus metrics for the dashboard panel. |
 | `GET` | `/api/buckets` | Enriched bucket list. |
 | `GET/PUT/DELETE` | `/api/browse/{bucket}/{key...}` | List / upload / download / delete objects. |
