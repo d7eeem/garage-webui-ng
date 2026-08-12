@@ -132,9 +132,36 @@ The user database is created at `./data/garage-webui-ng.db` relative to the work
 
 ### Updating
 
-**The app never updates itself.** It holds your Garage admin token, and downloading and executing code inside that process is a risk this project deliberately does not take — releases aren't published with checksums or signatures yet, so there is no safe way to verify what would be fetched.
+**The app never updates itself.** It holds your Garage admin token, and downloading and executing code inside that process is a risk this project deliberately does not take. Releases are now checksummed and signed (see **Verifying a release** below) so a download can be checked before you trust it, but the app itself does not fetch or run that download for you — you still fetch and swap the binary, or update the container image, yourself.
 
 Instead, the **About** tab (Settings → About) shows the version you're running and whether a newer release exists (set `UPDATE_CHECK_ENABLED=true` to enable that check). If it detects that the running executable is writable, it also shows the exact `systemctl stop` / `install` / `systemctl start` sequence for a binary install. Otherwise — a container image, or a hardened service whose binary it cannot write — it just says the deployment is updated from outside the app, since a container and a locked-down systemd service are updated differently and there's no way to safely guess which one you're running.
+
+### Verifying a release
+
+Every release since this feature landed ships three extra assets alongside the binaries: `SHA256SUMS` (a checksum of each binary), `SHA256SUMS.sig` (an ed25519 signature of `SHA256SUMS`), and the binaries themselves. Verification uses only standard tools plus the `relsign` helper in this repo — no third-party CLI, no network call.
+
+**As a user, verifying a download:**
+
+```bash
+# 1. Check the binary's hash matches the published SHA256SUMS.
+sha256sum -c SHA256SUMS --ignore-missing
+
+# 2. Check SHA256SUMS itself was signed by the project's release key.
+#    <public key> is the hex value hardcoded in backend/release_key.go on
+#    the tag you downloaded. Run from a checkout of this repo's `backend/`
+#    directory (go run fetches nothing else — it just compiles the tool).
+go run ./cmd/relsign verify -pub <public key> -in SHA256SUMS -sig SHA256SUMS.sig
+```
+
+Both must pass. Step 1 alone only proves the binary matches the checksum file — it says nothing about who produced that file. Step 2 is what ties the checksums back to this project.
+
+**One-time setup for maintainers (already done for this repository — documented for anyone forking or rotating the key):**
+
+1. From `backend/`, run `go run ./cmd/relsign keygen`. It prints a private key (hex) to stdout and a public key (hex) to stderr.
+2. Store the private key as the repository secret `RELEASE_SIGNING_KEY`. **Never commit it, paste it into an issue/PR, or let it appear in a log** — the release workflow reads it only from that secret, and `relsign sign` only reads it from an environment variable, never a command-line flag, precisely so it can't leak into CI logs or the process table.
+3. Paste the public key into `releasePublicKey` in `backend/release_key.go` and commit that (the public key is not a secret).
+
+**Losing the private key** means rotating it: generate a new pair, update the `RELEASE_SIGNING_KEY` secret and `backend/release_key.go`, and note the rotation in the release notes. Older binaries built with the previous public key baked in will not be able to verify releases signed with the new key — there is no fallback to "unsigned but trusted anyway," by design.
 
 ## 🐳 Docker Deployment
 
