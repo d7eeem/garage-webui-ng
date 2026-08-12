@@ -55,8 +55,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 func usage(w io.Writer) {
 	fmt.Fprintln(w, `usage:
   relsign keygen
-      Generates an ed25519 keypair. Prints the private key (hex) to stdout
-      and the public key (hex) to stderr.
+      Generates an ed25519 keypair. Prints only the private key (hex) to
+      stdout, so it can be piped straight into a secret store, and the
+      public key (hex, labelled) to stderr.
 
   relsign sign -key-env <ENV_VAR> -in <file> -out <sig-file>
       Signs the exact bytes of <file> using the hex private key read from
@@ -67,11 +68,16 @@ func usage(w io.Writer) {
       Exits non-zero on any failure.`)
 }
 
-// runKeygen generates a fresh ed25519 keypair and prints it: the private
-// half to stdout, the public half to stderr, each on one clearly labelled
-// line. Splitting the streams means a caller can capture just the public
-// key (e.g. `relsign keygen 2>pub.txt >/dev/null` is wrong on purpose — see
-// README) without an accidental copy-paste of the private half.
+// runKeygen generates a fresh ed25519 keypair and prints it: the bare
+// private key hex on stdout, and everything a human needs — the labelled
+// public key plus a reminder about stdout — on stderr.
+//
+// stdout carries ONLY the payload because the documented setup step pipes
+// it straight into `gh secret set RELEASE_SIGNING_KEY`: any label text
+// lands inside the secret and corrupts it. That is exactly what broke the
+// v3.7.0 release (the decoder choked on the 'P' of a "PRIVATE KEY" label
+// that had been piped into the secret). stdout is for the machine, stderr
+// is for the human.
 func runKeygen(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -87,8 +93,9 @@ func runKeygen(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("generate keypair: %w", err)
 	}
 
-	fmt.Fprintln(stdout, "PRIVATE KEY (hex, secret — store as the RELEASE_SIGNING_KEY GitHub secret, never commit):", hex.EncodeToString(priv))
+	fmt.Fprintln(stdout, hex.EncodeToString(priv))
 	fmt.Fprintln(stderr, "PUBLIC KEY (hex, safe to share — paste into backend/release_key.go):", hex.EncodeToString(pub))
+	fmt.Fprintln(stderr, "NOTE: stdout carried only the private key (hex, secret, never commit) — pipe it directly into the RELEASE_SIGNING_KEY secret store, e.g. `relsign keygen 2>pub.txt | gh secret set RELEASE_SIGNING_KEY`.")
 	return nil
 }
 
