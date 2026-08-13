@@ -7,12 +7,25 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/d7eeem/garage-webui-ng/schema"
 )
+
+// settleWindow is a deliberate pause between "we've seen the expected number
+// of concurrent arrivals" and "snapshot peak concurrency", giving any
+// EXTRA (bound-violating) arrivals a chance to land before the assertion
+// fires. Do not remove this: with an over-wide semaphore, those extra
+// arrivals are still in flight (racing the scheduler, not gated by
+// anything) and only reliably show up if we wait for them. A longer window
+// only makes the test a stricter, more reliable guard against a widened
+// bound — it never makes the correct-bound case flaky, because once
+// maxBucketInfoConcurrency holders are all blocked on <-release, the real
+// semaphore in GetAll guarantees nothing else can start until one of them
+// finishes, which cannot happen until this test closes release itself.
+const settleWindow = 50 * time.Millisecond
 
 // TestBucketInfoConcurrencyIsBounded drives the real Buckets.GetAll handler
 // (backend/router/buckets.go) against a fake admin API, rather than
@@ -20,15 +33,21 @@ import (
 // reimplementation never called GetAll at all, so it measured 0.0% coverage
 // on the handler it was meant to guard.
 //
-// The fake's GetBucketInfo endpoint blocks every request until exactly
-// maxBucketInfoConcurrency of them are in flight simultaneously, then
-// releases them all at once via a closed channel. This proves the semaphore
-// in GetAll actually bounds concurrency at the HTTP transport level —
-// deterministically, with no artificial delay: the gate itself forces the overlap
-// instead of hoping goroutines race each other inside a sleep window. If
-// GetAll's semaphore were removed or its capacity constant misread, this
-// test would hang until the overall `go test` timeout rather than pass by
-// accident.
+// The fake's GetBucketInfo endpoint blocks every request unconditionally on
+// <-release — it never decides for itself when enough requests have
+// arrived. Instead this test waits (via a channel, not a sleep loop) until
+// exactly maxBucketInfoConcurrency arrivals have been observed, pauses for
+// settleWindow so any bound-violating extra arrivals have time to land, and
+// only then asserts peak concurrency and releases every blocked handler at
+// once. This ordering is what makes the test a real guard rather than a
+// race: gating release on "the Nth arrival showed up" (an earlier version
+// of this test did that) makes an over-wide semaphore invisible whenever
+// the first N handlers happen to finish before goroutines N+1.. arrive — an
+// over-wide bound would then never get caught. If GetAll's semaphore were
+// removed or its capacity constant misread, this test now fails the peak
+// assertion instead of just hoping the timing lines up — and if the real
+// bound is somehow never reached at all, it fails via the arrival timeout
+// below rather than hanging the suite.
 func TestBucketInfoConcurrencyIsBounded(t *testing.T) {
 	const totalBuckets = 20
 	// A bucket whose GetBucketInfo fails. Chosen outside the first
@@ -46,7 +65,11 @@ func TestBucketInfoConcurrencyIsBounded(t *testing.T) {
 	var inFlight int32
 	var peak int32
 	release := make(chan struct{})
-	var releaseOnce sync.Once
+	// arrived gets one send per GetBucketInfo arrival, buffered to
+	// totalBuckets so a handler's send never blocks regardless of how many
+	// requests actually land concurrently (including in the bound-violated
+	// case this test exists to catch).
+	arrived := make(chan struct{}, totalBuckets)
 
 	adminServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -66,9 +89,7 @@ func TestBucketInfoConcurrencyIsBounded(t *testing.T) {
 					break
 				}
 			}
-			if n == maxBucketInfoConcurrency {
-				releaseOnce.Do(func() { close(release) })
-			}
+			arrived <- struct{}{}
 			<-release
 			atomic.AddInt32(&inFlight, -1)
 
@@ -96,7 +117,45 @@ func TestBucketInfoConcurrencyIsBounded(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/buckets", nil)
 	rec := httptest.NewRecorder()
-	(&Buckets{}).GetAll(rec, req)
+
+	// GetAll blocks until every one of its goroutines returns, which
+	// requires this test to close release first — so it has to run in its
+	// own goroutine while the test observes arrivals and snapshots peak.
+	done := make(chan struct{})
+	go func() {
+		(&Buckets{}).GetAll(rec, req)
+		close(done)
+	}()
+
+	arrivalTimeout := time.NewTimer(5 * time.Second)
+	defer arrivalTimeout.Stop()
+	for i := 0; i < maxBucketInfoConcurrency; i++ {
+		select {
+		case <-arrived:
+		case <-arrivalTimeout.C:
+			t.Fatalf("timed out waiting for %d concurrent GetBucketInfo arrivals (only saw %d) — GetAll may not be bounding concurrency at all", maxBucketInfoConcurrency, i)
+		}
+	}
+
+	// See the comment on settleWindow: give any bound-violating extra
+	// arrivals a chance to land before we snapshot peak.
+	settle := time.NewTimer(settleWindow)
+	defer settle.Stop()
+	<-settle.C
+
+	if got := atomic.LoadInt32(&peak); got != maxBucketInfoConcurrency {
+		t.Errorf("peak concurrency = %d, want exactly %d (GetAll's semaphore should make more impossible)", got, maxBucketInfoConcurrency)
+	}
+
+	close(release)
+
+	doneTimeout := time.NewTimer(5 * time.Second)
+	defer doneTimeout.Stop()
+	select {
+	case <-done:
+	case <-doneTimeout.C:
+		t.Fatal("GetAll did not return after release was closed")
+	}
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
@@ -126,12 +185,5 @@ func TestBucketInfoConcurrencyIsBounded(t *testing.T) {
 	}
 	if fb.Created != "" {
 		t.Errorf("fallback bucket Created = %q, want empty (proves this came from the ListBuckets fallback, not a real GetBucketInfo response)", fb.Created)
-	}
-
-	if got := atomic.LoadInt32(&peak); got > maxBucketInfoConcurrency {
-		t.Errorf("peak concurrency = %d, want <= %d", got, maxBucketInfoConcurrency)
-	}
-	if got := atomic.LoadInt32(&peak); got != maxBucketInfoConcurrency {
-		t.Errorf("peak concurrency = %d, want exactly %d (the release gate should force it)", got, maxBucketInfoConcurrency)
 	}
 }
