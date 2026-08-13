@@ -1,66 +1,137 @@
 package router
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
+
+	"github.com/d7eeem/garage-webui-ng/schema"
 )
 
-// TestBucketInfoConcurrencyIsBounded exercises the same bounded-semaphore
-// pattern GetAll uses to limit concurrent GetBucketInfo calls: a buffered
-// channel of capacity maxBucketInfoConcurrency is filled before each
-// goroutine is spawned, and drained when it finishes.
+// TestBucketInfoConcurrencyIsBounded drives the real Buckets.GetAll handler
+// (backend/router/buckets.go) against a fake admin API, rather than
+// reimplementing the bounded-semaphore pattern in the test body — that
+// reimplementation never called GetAll at all, so it measured 0.0% coverage
+// on the handler it was meant to guard.
 //
-// This does not exercise the HTTP handler itself — GetAll calls the
-// package-level utils.Garage singleton, which would need a live admin API or
-// an httptest fixture wired through it to test end to end. This test instead
-// proves the concurrency-limiting pattern: peak concurrent goroutines never
-// exceeds the bound, and every task still completes.
+// The fake's GetBucketInfo endpoint blocks every request until exactly
+// maxBucketInfoConcurrency of them are in flight simultaneously, then
+// releases them all at once via a closed channel. This proves the semaphore
+// in GetAll actually bounds concurrency at the HTTP transport level —
+// deterministically, with no artificial delay: the gate itself forces the overlap
+// instead of hoping goroutines race each other inside a sleep window. If
+// GetAll's semaphore were removed or its capacity constant misread, this
+// test would hang until the overall `go test` timeout rather than pass by
+// accident.
 func TestBucketInfoConcurrencyIsBounded(t *testing.T) {
-	const tasks = 100
+	const totalBuckets = 20
+	// A bucket whose GetBucketInfo fails. Chosen outside the first
+	// maxBucketInfoConcurrency arrivals so it doesn't change how the release
+	// gate below is reached.
+	const failIndex = totalBuckets - 1
 
-	sem := make(chan struct{}, maxBucketInfoConcurrency)
-	var wg sync.WaitGroup
-	var current int64
-	var peak int64
-	var completed int64
+	ids := make([]string, totalBuckets)
+	aliases := make([][]string, totalBuckets)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("bucket-%02d", i)
+		aliases[i] = []string{fmt.Sprintf("alias-%02d", i)}
+	}
 
-	for i := 0; i < tasks; i++ {
-		wg.Add(1)
-		sem <- struct{}{}
+	var inFlight int32
+	var peak int32
+	release := make(chan struct{})
+	var releaseOnce sync.Once
 
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
+	adminServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v2/ListBuckets"):
+			res := make([]schema.GetBucketsRes, totalBuckets)
+			for i := range res {
+				res[i] = schema.GetBucketsRes{ID: ids[i], GlobalAliases: aliases[i]}
+			}
+			_ = json.NewEncoder(w).Encode(res)
 
-			n := atomic.AddInt64(&current, 1)
+		case strings.HasPrefix(r.URL.Path, "/v2/GetBucketInfo"):
+			n := atomic.AddInt32(&inFlight, 1)
 			for {
-				p := atomic.LoadInt64(&peak)
-				if n <= p || atomic.CompareAndSwapInt64(&peak, p, n) {
+				p := atomic.LoadInt32(&peak)
+				if n <= p || atomic.CompareAndSwapInt32(&peak, p, n) {
 					break
 				}
 			}
+			if n == maxBucketInfoConcurrency {
+				releaseOnce.Do(func() { close(release) })
+			}
+			<-release
+			atomic.AddInt32(&inFlight, -1)
 
-			// Hold the slot briefly so concurrent goroutines actually
-			// overlap; without this, tasks may complete so fast that the
-			// bound is never really exercised.
-			time.Sleep(time.Millisecond)
+			id := r.URL.Query().Get("id")
+			if id == ids[failIndex] {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"message":"induced failure"}`))
+				return
+			}
 
-			atomic.AddInt64(&current, -1)
-			atomic.AddInt64(&completed, 1)
-		}()
+			idx, _ := strconv.Atoi(strings.TrimPrefix(id, "bucket-"))
+			_ = json.NewEncoder(w).Encode(schema.Bucket{
+				ID:            id,
+				GlobalAliases: aliases[idx],
+				Created:       "created-" + id,
+			})
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer adminServer.Close()
+
+	t.Setenv("API_BASE_URL", adminServer.URL)
+
+	req := httptest.NewRequest(http.MethodGet, "/buckets", nil)
+	rec := httptest.NewRecorder()
+	(&Buckets{}).GetAll(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
 	}
 
-	wg.Wait()
+	var got []schema.Bucket
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("cannot decode response: %v", err)
+	}
 
-	if completed != tasks {
-		t.Errorf("completed tasks = %d, want %d", completed, tasks)
+	if len(got) != totalBuckets {
+		t.Fatalf("got %d buckets, want %d", len(got), totalBuckets)
 	}
-	if peak > maxBucketInfoConcurrency {
-		t.Errorf("peak concurrency = %d, want <= %d", peak, maxBucketInfoConcurrency)
+
+	for i, b := range got {
+		if b.ID != ids[i] {
+			t.Errorf("response[%d].ID = %q, want %q (results must stay in list order)", i, b.ID, ids[i])
+		}
 	}
-	if peak == 0 {
-		t.Error("peak concurrency = 0, want > 0 (test never observed any goroutine running)")
+
+	fb := got[failIndex]
+	if fb.ID != ids[failIndex] {
+		t.Errorf("fallback bucket ID = %q, want %q", fb.ID, ids[failIndex])
+	}
+	if len(fb.GlobalAliases) != 1 || fb.GlobalAliases[0] != aliases[failIndex][0] {
+		t.Errorf("fallback bucket GlobalAliases = %v, want %v", fb.GlobalAliases, aliases[failIndex])
+	}
+	if fb.Created != "" {
+		t.Errorf("fallback bucket Created = %q, want empty (proves this came from the ListBuckets fallback, not a real GetBucketInfo response)", fb.Created)
+	}
+
+	if got := atomic.LoadInt32(&peak); got > maxBucketInfoConcurrency {
+		t.Errorf("peak concurrency = %d, want <= %d", got, maxBucketInfoConcurrency)
+	}
+	if got := atomic.LoadInt32(&peak); got != maxBucketInfoConcurrency {
+		t.Errorf("peak concurrency = %d, want exactly %d (the release gate should force it)", got, maxBucketInfoConcurrency)
 	}
 }

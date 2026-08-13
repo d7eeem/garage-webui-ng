@@ -4,13 +4,22 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/d7eeem/garage-webui-ng/schema"
 	"github.com/d7eeem/garage-webui-ng/utils"
@@ -735,6 +744,551 @@ func TestArchiveEntryNames(t *testing.T) {
 	})
 }
 
+// ---------------------------------------------------------------------------
+// s3Fixture: a fake admin API + fake S3 API wired to the real handlers purely
+// through environment variables.
+//
+// The seam is environmental, not structural: getS3Client (browse.go) resolves
+// S3_ENDPOINT_URL via utils.Garage.GetS3Endpoint() at CALL time, not at
+// construction, and ShareObject resolves S3_PUBLIC_ENDPOINT_URL the same way.
+// t.Setenv on both is therefore enough to point every handler at a local
+// httptest server — no interface, no package-level function variable, no
+// production code change. This is the same trick TestDownloadArchive's
+// success subtest already used; this fixture is that code, generalized so
+// every handler in this file can reuse it.
+//
+// The fake S3 server speaks just enough of the real REST/XML wire protocol
+// for aws-sdk-go-v2's restxml deserializers to accept it: XML error bodies
+// with a <Code> element, RFC1123 Last-Modified headers, S3-shaped
+// ListBucketResult/DeleteResult/ListMultipartUploadsResult documents. Getting
+// this wrong doesn't fail loudly with an assertion — it fails as an SDK
+// deserialization error, so each piece below is shaped against the actual
+// aws-sdk-go-v2 v1.106.4 deserializers.go/serializers.go source rather than
+// assumed.
+type s3Fixture struct {
+	t      *testing.T
+	bucket string
+
+	adminServer *httptest.Server
+	s3Server    *httptest.Server
+
+	mu             sync.Mutex
+	objects        map[string]*fixtureObject
+	uploads        []fixtureUpload
+	failDeleteKeys map[string]bool
+
+	requestsMu sync.Mutex
+	requests   []fixtureRequest
+
+	// Hooks let a single test take full control of one S3 operation without
+	// forking the whole fixture. Each returns true if it fully handled the
+	// request (the default in-memory behavior below is then skipped).
+	onListObjectsV2 func(w http.ResponseWriter, r *http.Request) bool
+}
+
+type fixtureObject struct {
+	body         []byte
+	contentType  string
+	lastModified time.Time
+	etag         string
+}
+
+type fixtureUpload struct {
+	key       string
+	uploadID  string
+	initiated time.Time
+}
+
+// fixtureRequest is a recorded incoming request to the fake S3 server, for
+// tests that need to assert on what the real handler actually sent (e.g. the
+// continuation token or max-keys it forwarded).
+type fixtureRequest struct {
+	Method string
+	Path   string
+	Query  url.Values
+}
+
+// newS3Fixture starts a fake admin server and a fake S3 server, points the
+// real handlers at both via t.Setenv, and registers cleanup. bucket must be
+// unique to this test: getBucketCredentials caches per-bucket credentials for
+// ~1h with no invalidation (backend/router/browse.go), so a shared bucket
+// name would let one test's credentials leak into another's and make results
+// order-dependent.
+func newS3Fixture(t *testing.T, bucket string) *s3Fixture {
+	t.Helper()
+	utils.InitCacheManager()
+
+	f := &s3Fixture{
+		t:              t,
+		bucket:         bucket,
+		objects:        map[string]*fixtureObject{},
+		failDeleteKeys: map[string]bool{},
+	}
+
+	const accessKeyID = "AKIATESTFIXTURE"
+	f.adminServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v2/GetBucketInfo"):
+			_ = json.NewEncoder(w).Encode(schema.Bucket{
+				Keys: []schema.KeyElement{
+					{AccessKeyID: accessKeyID, Permissions: schema.Permissions{Read: true, Write: true}},
+				},
+			})
+		case strings.HasPrefix(r.URL.Path, "/v2/GetKeyInfo"):
+			_ = json.NewEncoder(w).Encode(schema.KeyElement{
+				AccessKeyID:     accessKeyID,
+				SecretAccessKey: "test-secret",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(f.adminServer.Close)
+
+	f.s3Server = httptest.NewServer(http.HandlerFunc(f.handle))
+	t.Cleanup(f.s3Server.Close)
+
+	t.Setenv("API_BASE_URL", f.adminServer.URL)
+	t.Setenv("S3_ENDPOINT_URL", f.s3Server.URL)
+
+	return f
+}
+
+// EnableSharing points S3_PUBLIC_ENDPOINT_URL at a fixed, unreachable host
+// distinct from the internal S3 endpoint. ShareObject's presign step signs a
+// URL locally without dialing it (see the function comment on ShareObject in
+// browse.go), so the endpoint never needs to be reachable — but using a
+// different host than the internal one lets a test assert that the PUBLIC
+// endpoint, not the internal one, was actually used to sign the link.
+func (f *s3Fixture) EnableSharing() {
+	f.t.Helper()
+	f.t.Setenv("S3_PUBLIC_ENDPOINT_URL", "https://public.example.test")
+}
+
+// PutTestObject seeds an object directly into the fake store, bypassing
+// PutObject, so read-path tests don't depend on the write path also working.
+func (f *s3Fixture) PutTestObject(key, body, contentType string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.objects[key] = &fixtureObject{
+		body:         []byte(body),
+		contentType:  contentType,
+		lastModified: time.Now(),
+		etag:         `"etag-` + key + `"`,
+	}
+}
+
+// SeedUpload registers an in-progress multipart upload for
+// ListMultipartUploads/AbortMultipartUpload tests.
+func (f *s3Fixture) SeedUpload(key, uploadID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.uploads = append(f.uploads, fixtureUpload{key: key, uploadID: uploadID, initiated: time.Now()})
+}
+
+// HasObject reports whether key is still present in the fake store —
+// deleted keys are removed by the default DeleteObject/DeleteObjects
+// handling below.
+func (f *s3Fixture) HasObject(key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.objects[key]
+	return ok
+}
+
+// ObjectBody returns the stored body for key, or "" if absent.
+func (f *s3Fixture) ObjectBody(key string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if obj, ok := f.objects[key]; ok {
+		return string(obj.body)
+	}
+	return ""
+}
+
+// ObjectContentType returns the stored Content-Type for key ("" if absent) —
+// the type the SDK actually sent on the wire, letting a test assert on
+// resolveUploadContentType's effect end to end rather than as a pure unit.
+func (f *s3Fixture) ObjectContentType(key string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if obj, ok := f.objects[key]; ok {
+		return obj.contentType
+	}
+	return ""
+}
+
+// UploadCount reports how many multipart uploads are still registered.
+func (f *s3Fixture) UploadCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.uploads)
+}
+
+// FailDelete makes the fake report key as a per-object delete failure
+// instead of deleting it, for DeleteObject/BulkDeleteObjects partial-failure
+// tests.
+func (f *s3Fixture) FailDelete(key string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failDeleteKeys[key] = true
+}
+
+// Requests returns every request the fake S3 server has recorded so far, in
+// arrival order.
+func (f *s3Fixture) Requests() []fixtureRequest {
+	f.requestsMu.Lock()
+	defer f.requestsMu.Unlock()
+	return append([]fixtureRequest(nil), f.requests...)
+}
+
+func (f *s3Fixture) recordRequest(r *http.Request) {
+	f.requestsMu.Lock()
+	defer f.requestsMu.Unlock()
+	f.requests = append(f.requests, fixtureRequest{
+		Method: r.Method,
+		Path:   r.URL.Path,
+		Query:  r.URL.Query(),
+	})
+}
+
+// handle dispatches an incoming request from the real aws-sdk-go-v2 client to
+// the matching fake operation, based on the same method+path-style+query
+// shape the SDK's restxml serializers actually produce.
+func (f *s3Fixture) handle(w http.ResponseWriter, r *http.Request) {
+	f.recordRequest(r)
+
+	trimmed := strings.TrimPrefix(r.URL.Path, "/")
+	parts := strings.SplitN(trimmed, "/", 2)
+	key := ""
+	if len(parts) > 1 {
+		key = parts[1]
+	}
+	q := r.URL.Query()
+
+	switch {
+	// ListObjectsV2's fixed opPath is "/?list-type=2" (serializers.go:6190).
+	case r.Method == http.MethodGet && key == "" && q.Get("list-type") == "2":
+		if f.onListObjectsV2 != nil && f.onListObjectsV2(w, r) {
+			return
+		}
+		f.defaultListObjectsV2(w, q)
+
+	// ListMultipartUploads' fixed opPath is "/?uploads" (serializers.go:5888).
+	case r.Method == http.MethodGet && key == "" && q.Has("uploads"):
+		f.defaultListMultipartUploads(w)
+
+	// DeleteObjects' fixed opPath is "/?delete" (serializers.go:2477).
+	case r.Method == http.MethodPost && key == "" && q.Has("delete"):
+		f.defaultDeleteObjects(w, r)
+
+	case r.Method == http.MethodPut && key != "":
+		f.defaultPutObject(w, r, key)
+
+	case r.Method == http.MethodHead && key != "":
+		f.defaultHeadObject(w, key)
+
+	case r.Method == http.MethodGet && key != "":
+		f.defaultGetObject(w, key)
+
+	case r.Method == http.MethodDelete && key != "" && q.Has("uploadId"):
+		f.defaultAbortMultipartUpload(key, q.Get("uploadId"))
+		w.WriteHeader(http.StatusNoContent)
+
+	case r.Method == http.MethodDelete && key != "":
+		f.defaultDeleteObject(w, key)
+
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+// defaultListObjectsV2 answers GET /{bucket}/?list-type=2. Query params it
+// understands (awsRestxml_serializeOpHttpBindingsListObjectsV2Input,
+// serializers.go:6219): prefix, delimiter, max-keys, continuation-token.
+// Pagination is a simplified but real cursor: the continuation token is just
+// the last key emitted, which is fine because the SDK never interprets the
+// token itself — it only ever echoes back whatever NextContinuationToken this
+// fixture handed it on the previous page.
+func (f *s3Fixture) defaultListObjectsV2(w http.ResponseWriter, q url.Values) {
+	prefix := q.Get("prefix")
+	delimiter := q.Get("delimiter")
+	maxKeys, _ := strconv.Atoi(q.Get("max-keys"))
+	if maxKeys <= 0 {
+		maxKeys = 1000
+	}
+	continuationToken := q.Get("continuation-token")
+
+	f.mu.Lock()
+	var keys []string
+	for k := range f.objects {
+		if strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	f.mu.Unlock()
+	sort.Strings(keys)
+
+	start := 0
+	if continuationToken != "" {
+		for i, k := range keys {
+			if k == continuationToken {
+				start = i + 1
+				break
+			}
+		}
+	}
+
+	var contents, commonPrefixes []string
+	seenPrefix := map[string]bool{}
+	end := start
+	for end < len(keys) && len(contents)+len(commonPrefixes) < maxKeys {
+		k := keys[end]
+		rel := strings.TrimPrefix(k, prefix)
+		if delimiter != "" {
+			if idx := strings.Index(rel, delimiter); idx >= 0 {
+				cp := prefix + rel[:idx+len(delimiter)]
+				if !seenPrefix[cp] {
+					seenPrefix[cp] = true
+					commonPrefixes = append(commonPrefixes, cp)
+				}
+				end++
+				continue
+			}
+		}
+		contents = append(contents, k)
+		end++
+	}
+
+	truncated := end < len(keys)
+	nextToken := ""
+	if truncated {
+		nextToken = keys[end-1]
+	}
+
+	f.writeListObjectsV2(w, contents, commonPrefixes, truncated, nextToken)
+}
+
+// writeListObjectsV2 writes a ListBucketResult document shaped for
+// awsRestxml_deserializeOpDocumentListObjectsV2Output (deserializers.go:10899):
+// Contents/Key/LastModified/Size/ETag, CommonPrefixes/Prefix, IsTruncated,
+// NextContinuationToken. Kept separate from defaultListObjectsV2 so a test's
+// onListObjectsV2 hook can serve an exact page sequence (e.g. a forced
+// two-page split) without reimplementing the XML shape.
+func (f *s3Fixture) writeListObjectsV2(w http.ResponseWriter, contents, commonPrefixes []string, truncated bool, nextToken string) {
+	f.mu.Lock()
+	var sb strings.Builder
+	sb.WriteString(xml.Header)
+	sb.WriteString(`<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`)
+	sb.WriteString(fmt.Sprintf("<IsTruncated>%t</IsTruncated>", truncated))
+	if nextToken != "" {
+		sb.WriteString("<NextContinuationToken>" + xmlEscape(nextToken) + "</NextContinuationToken>")
+	}
+	for _, k := range contents {
+		obj := f.objects[k]
+		sb.WriteString("<Contents><Key>" + xmlEscape(k) + "</Key>")
+		lm := time.Unix(0, 0)
+		size := 0
+		etag := ""
+		if obj != nil {
+			if !obj.lastModified.IsZero() {
+				lm = obj.lastModified
+			}
+			size = len(obj.body)
+			etag = obj.etag
+		}
+		sb.WriteString("<LastModified>" + lm.UTC().Format("2006-01-02T15:04:05.000Z") + "</LastModified>")
+		sb.WriteString(fmt.Sprintf("<Size>%d</Size>", size))
+		if etag != "" {
+			sb.WriteString("<ETag>" + xmlEscape(etag) + "</ETag>")
+		}
+		sb.WriteString("</Contents>")
+	}
+	for _, p := range commonPrefixes {
+		sb.WriteString("<CommonPrefixes><Prefix>" + xmlEscape(p) + "</Prefix></CommonPrefixes>")
+	}
+	sb.WriteString(`</ListBucketResult>`)
+	f.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, sb.String())
+}
+
+// defaultGetObject answers GET /{bucket}/{key}. A missing key returns the XML
+// shape awsRestxml_deserializeOpErrorGetObject (deserializers.go:6601)
+// matches on: a <Code>NoSuchKey</Code> element, which the SDK turns into
+// *types.NoSuchKey — this is what makes isNotFoundErr's GetObject branch
+// reachable at all from a fake server.
+func (f *s3Fixture) defaultGetObject(w http.ResponseWriter, key string) {
+	f.mu.Lock()
+	obj, ok := f.objects[key]
+	f.mu.Unlock()
+	if !ok {
+		f.writeS3Error(w, http.StatusNotFound, "NoSuchKey", "The specified key does not exist.", key)
+		return
+	}
+	if obj.contentType != "" {
+		w.Header().Set("Content-Type", obj.contentType)
+	}
+	if !obj.lastModified.IsZero() {
+		w.Header().Set("Last-Modified", obj.lastModified.UTC().Format(http.TimeFormat))
+	}
+	if obj.etag != "" {
+		w.Header().Set("ETag", obj.etag)
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(obj.body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(obj.body)
+}
+
+// defaultHeadObject answers HEAD /{bucket}/{key}. A HEAD response has no
+// body, so a missing key is a bare 404: GetErrorResponseComponents
+// (service/internal/s3shared/xml_utils.go) derives the error code from the
+// status text itself ("Not Found" -> "NotFound") whenever the body carries
+// neither a Code nor a Message — exactly what makes isNotFoundErr's
+// HeadObject branch (case "NotFound") reachable.
+func (f *s3Fixture) defaultHeadObject(w http.ResponseWriter, key string) {
+	f.mu.Lock()
+	obj, ok := f.objects[key]
+	f.mu.Unlock()
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if obj.contentType != "" {
+		w.Header().Set("Content-Type", obj.contentType)
+	}
+	if !obj.lastModified.IsZero() {
+		w.Header().Set("Last-Modified", obj.lastModified.UTC().Format(http.TimeFormat))
+	}
+	if obj.etag != "" {
+		w.Header().Set("ETag", obj.etag)
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(obj.body)))
+	w.WriteHeader(http.StatusOK)
+}
+
+// defaultPutObject answers PUT /{bucket}/{key}, storing whatever Content-Type
+// the SDK actually sent — what lets a test assert on
+// resolveUploadContentType's effect end to end, not just as a unit.
+func (f *s3Fixture) defaultPutObject(w http.ResponseWriter, r *http.Request, key string) {
+	body, _ := io.ReadAll(r.Body)
+	f.mu.Lock()
+	f.objects[key] = &fixtureObject{
+		body:         body,
+		contentType:  r.Header.Get("Content-Type"),
+		lastModified: time.Now(),
+		etag:         `"put-etag"`,
+	}
+	f.mu.Unlock()
+	w.Header().Set("ETag", `"put-etag"`)
+	w.WriteHeader(http.StatusOK)
+}
+
+// defaultDeleteObject answers DELETE /{bucket}/{key} (single-object delete).
+func (f *s3Fixture) defaultDeleteObject(w http.ResponseWriter, key string) {
+	f.mu.Lock()
+	delete(f.objects, key)
+	f.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteObjectsXML is just enough of DeleteObjectsInput's request body
+// (<Delete><Object><Key>...</Key></Object>...</Delete>) to recover which
+// keys were asked for.
+type deleteObjectsXML struct {
+	XMLName xml.Name `xml:"Delete"`
+	Objects []struct {
+		Key string `xml:"Key"`
+	} `xml:"Object"`
+}
+
+// defaultDeleteObjects answers POST /{bucket}/?delete. Any key registered via
+// FailDelete comes back as a per-object <Error> instead of <Deleted>, shaped
+// for awsRestxml_deserializeOpDocumentDeleteObjectsOutput
+// (deserializers.go:2952) — this is how the BulkDeleteObjects/DeleteObject
+// partial-failure tests are driven.
+func (f *s3Fixture) defaultDeleteObjects(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var parsed deleteObjectsXML
+	_ = xml.Unmarshal(body, &parsed)
+
+	var sb strings.Builder
+	sb.WriteString(xml.Header)
+	sb.WriteString("<DeleteResult>")
+	f.mu.Lock()
+	for _, o := range parsed.Objects {
+		if f.failDeleteKeys[o.Key] {
+			sb.WriteString("<Error><Key>" + xmlEscape(o.Key) + "</Key><Code>AccessDenied</Code><Message>test-induced failure</Message></Error>")
+			continue
+		}
+		delete(f.objects, o.Key)
+		sb.WriteString("<Deleted><Key>" + xmlEscape(o.Key) + "</Key></Deleted>")
+	}
+	f.mu.Unlock()
+	sb.WriteString("</DeleteResult>")
+
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, sb.String())
+}
+
+// defaultListMultipartUploads answers GET /{bucket}/?uploads, shaped for
+// awsRestxml_deserializeOpDocumentListMultipartUploadsOutput
+// (deserializers.go:10037): one <Upload> per seeded upload.
+func (f *s3Fixture) defaultListMultipartUploads(w http.ResponseWriter) {
+	f.mu.Lock()
+	uploads := append([]fixtureUpload(nil), f.uploads...)
+	f.mu.Unlock()
+
+	var sb strings.Builder
+	sb.WriteString(xml.Header)
+	sb.WriteString("<ListMultipartUploadsResult>")
+	for _, u := range uploads {
+		sb.WriteString("<Upload><Key>" + xmlEscape(u.key) + "</Key><UploadId>" + xmlEscape(u.uploadID) + "</UploadId><Initiated>" + u.initiated.UTC().Format("2006-01-02T15:04:05.000Z") + "</Initiated></Upload>")
+	}
+	sb.WriteString("</ListMultipartUploadsResult>")
+
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, sb.String())
+}
+
+// defaultAbortMultipartUpload removes a single seeded upload; the caller
+// (handle) writes the 204 response — AbortMultipartUploadOutput carries no
+// body.
+func (f *s3Fixture) defaultAbortMultipartUpload(key, uploadID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	kept := f.uploads[:0]
+	for _, u := range f.uploads {
+		if u.key == key && u.uploadID == uploadID {
+			continue
+		}
+		kept = append(kept, u)
+	}
+	f.uploads = kept
+}
+
+// writeS3Error writes an XML error body shaped for
+// GetUnwrappedErrorResponseComponents (service/internal/s3shared/xml_utils.go):
+// a <Code> element as a direct child of the root, which is all the SDK's
+// error deserializers actually look for regardless of the root element's own
+// name.
+func (f *s3Fixture) writeS3Error(w http.ResponseWriter, status int, code, message, key string) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, xml.Header+"<Error><Code>"+xmlEscape(code)+"</Code><Message>"+xmlEscape(message)+"</Message><Key>"+xmlEscape(key)+"</Key></Error>")
+}
+
+func xmlEscape(s string) string {
+	var buf bytes.Buffer
+	_ = xml.EscapeText(&buf, []byte(s))
+	return buf.String()
+}
+
 // withDownloadSession seeds an authenticated session (username only — this
 // package's handlers under test don't consult "authenticated"/"role") inside
 // the scs middleware, then runs fn with a request sharing that context, so fn
@@ -920,60 +1474,11 @@ func TestDownloadArchive(t *testing.T) {
 	})
 
 	t.Run("success streams a zip with common-prefix-stripped entries and the right headers", func(t *testing.T) {
-		utils.InitCacheManager()
-
 		const bucket = "archive-success-bucket"
-		const accessKeyID = "AKIATESTARCHIVE"
 
-		// Mock admin API: getBucketCredentials calls GetBucketInfo, then
-		// GetKeyInfo for the first read+write key it finds.
-		adminServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			switch {
-			case strings.HasPrefix(r.URL.Path, "/v2/GetBucketInfo"):
-				_ = json.NewEncoder(w).Encode(schema.Bucket{
-					Keys: []schema.KeyElement{
-						{
-							AccessKeyID: accessKeyID,
-							Permissions: schema.Permissions{Read: true, Write: true},
-						},
-					},
-				})
-			case strings.HasPrefix(r.URL.Path, "/v2/GetKeyInfo"):
-				_ = json.NewEncoder(w).Encode(schema.KeyElement{
-					AccessKeyID:     accessKeyID,
-					SecretAccessKey: "test-secret",
-				})
-			default:
-				w.WriteHeader(http.StatusNotFound)
-			}
-		}))
-		defer adminServer.Close()
-
-		// Mock S3 API (path-style): serves fixed content for the two keys the
-		// test selects, keyed on everything after the leading /{bucket}/.
-		objects := map[string]string{
-			"p/q/a.txt": "content-a",
-			"p/q/b.txt": "content-b",
-		}
-		s3Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 2)
-			if len(parts) != 2 {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			content, ok := objects[parts[1]]
-			if !ok {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			w.Header().Set("Content-Type", "application/octet-stream")
-			_, _ = w.Write([]byte(content))
-		}))
-		defer s3Server.Close()
-
-		t.Setenv("API_BASE_URL", adminServer.URL)
-		t.Setenv("S3_ENDPOINT_URL", s3Server.URL)
+		f := newS3Fixture(t, bucket)
+		f.PutTestObject("p/q/a.txt", "content-a", "application/octet-stream")
+		f.PutTestObject("p/q/b.txt", "content-b", "application/octet-stream")
 
 		withDownloadSession(t, "alice", func(r *http.Request) {
 			token := mintDownloadToken(t, r, bucket, []string{"p/q/a.txt", "p/q/b.txt"})
@@ -1009,5 +1514,592 @@ func TestDownloadArchive(t *testing.T) {
 				t.Errorf("zip entries = %v, want the common prefix stripped, not the raw keys", names)
 			}
 		})
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Handler-level tests for the S3 data plane (plan 055). None of these
+// handlers consult utils.Session, so unlike the download-token/archive tests
+// above, they don't need withDownloadSession — a plain httptest.Request with
+// SetPathValue is enough.
+
+func newGetObjectsRequest(bucket string, query url.Values) *http.Request {
+	target := "/browse/" + bucket
+	if len(query) > 0 {
+		target += "?" + query.Encode()
+	}
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.SetPathValue("bucket", bucket)
+	return req
+}
+
+func TestGetObjects(t *testing.T) {
+	t.Run("lists objects under a prefix with the common prefix stripped", func(t *testing.T) {
+		f := newS3Fixture(t, "getobjects-prefix-bucket")
+		f.PutTestObject("photos/img1.jpg", "one", "image/jpeg")
+		f.PutTestObject("photos/img2.jpg", "two", "image/jpeg")
+		f.PutTestObject("photos/sub/img3.jpg", "three", "image/jpeg")
+
+		req := newGetObjectsRequest(f.bucket, url.Values{"prefix": {"photos/"}})
+		rec := httptest.NewRecorder()
+		(&Browse{}).GetObjects(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		var got schema.BrowseObjectResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("cannot decode response: %v", err)
+		}
+
+		gotKeys := map[string]bool{}
+		for _, o := range got.Objects {
+			if o.ObjectKey != nil {
+				gotKeys[*o.ObjectKey] = true
+			}
+		}
+		if !gotKeys["img1.jpg"] || !gotKeys["img2.jpg"] {
+			t.Errorf("Objects = %v, want img1.jpg and img2.jpg with the prefix stripped", gotKeys)
+		}
+		if gotKeys["photos/img1.jpg"] {
+			t.Errorf("Objects contains the raw key %q, want the prefix stripped", "photos/img1.jpg")
+		}
+
+		found := false
+		for _, p := range got.Prefixes {
+			if p == "photos/sub/" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Prefixes = %v, want it to contain %q", got.Prefixes, "photos/sub/")
+		}
+	})
+
+	t.Run("continuation token round-trips through the fake's continuation-token query param", func(t *testing.T) {
+		f := newS3Fixture(t, "getobjects-continuation-bucket")
+		f.PutTestObject("a.txt", "a", "text/plain")
+		f.PutTestObject("b.txt", "b", "text/plain")
+		f.PutTestObject("c.txt", "c", "text/plain")
+
+		req := newGetObjectsRequest(f.bucket, url.Values{"limit": {"2"}})
+		rec := httptest.NewRecorder()
+		(&Browse{}).GetObjects(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("first call: status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		var first schema.BrowseObjectResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil {
+			t.Fatalf("cannot decode first response: %v", err)
+		}
+		if first.NextToken == nil || *first.NextToken == "" {
+			t.Fatalf("first response NextToken = %v, want non-empty (2 of 3 objects should truncate)", first.NextToken)
+		}
+
+		req2 := newGetObjectsRequest(f.bucket, url.Values{"limit": {"2"}, "next": {*first.NextToken}})
+		rec2 := httptest.NewRecorder()
+		(&Browse{}).GetObjects(rec2, req2)
+		if rec2.Code != http.StatusOK {
+			t.Fatalf("second call: status = %d, want 200, body=%s", rec2.Code, rec2.Body.String())
+		}
+
+		var listCalls []fixtureRequest
+		for _, r := range f.Requests() {
+			if r.Query.Get("list-type") == "2" {
+				listCalls = append(listCalls, r)
+			}
+		}
+		if len(listCalls) != 2 {
+			t.Fatalf("fake saw %d ListObjectsV2 calls, want 2", len(listCalls))
+		}
+		if got := listCalls[1].Query.Get("continuation-token"); got != *first.NextToken {
+			t.Errorf("second call's continuation-token = %q, want %q (the first response's NextToken)", got, *first.NextToken)
+		}
+	})
+
+	t.Run("an out-of-range limit is clamped before reaching the fake", func(t *testing.T) {
+		f := newS3Fixture(t, "getobjects-limit-bucket")
+		f.PutTestObject("a.txt", "a", "text/plain")
+
+		req := newGetObjectsRequest(f.bucket, url.Values{"limit": {"5000"}})
+		rec := httptest.NewRecorder()
+		(&Browse{}).GetObjects(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+
+		reqs := f.Requests()
+		if len(reqs) != 1 {
+			t.Fatalf("fake saw %d requests, want 1", len(reqs))
+		}
+		if got := reqs[0].Query.Get("max-keys"); got != "1000" {
+			t.Errorf("max-keys received by the fake = %q, want %q (normalizeListLimit's cap)", got, "1000")
+		}
+	})
+}
+
+func newGetOneObjectRequest(bucket, key string, query url.Values) *http.Request {
+	target := "/browse/" + bucket + "/" + key
+	if len(query) > 0 {
+		target += "?" + query.Encode()
+	}
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.SetPathValue("bucket", bucket)
+	req.SetPathValue("key", key)
+	return req
+}
+
+func TestGetOneObject(t *testing.T) {
+	t.Run("no view/dl/thumb returns metadata as JSON, not a body", func(t *testing.T) {
+		f := newS3Fixture(t, "getone-head-bucket")
+		f.PutTestObject("doc.txt", "hello", "text/plain")
+
+		req := newGetOneObjectRequest(f.bucket, "doc.txt", nil)
+		rec := httptest.NewRecorder()
+		(&Browse{}).GetOneObject(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", ct)
+		}
+		if !strings.Contains(rec.Body.String(), `"ETag"`) {
+			t.Errorf("body = %s, want it to contain object metadata (ETag)", rec.Body.String())
+		}
+	})
+
+	t.Run("view=1 on an inline-safe type returns the body with no Content-Disposition", func(t *testing.T) {
+		f := newS3Fixture(t, "getone-view-safe-bucket")
+		f.PutTestObject("photo.png", "pngbytes", "image/png")
+
+		req := newGetOneObjectRequest(f.bucket, "photo.png", url.Values{"view": {"1"}})
+		rec := httptest.NewRecorder()
+		(&Browse{}).GetOneObject(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+			t.Errorf("Content-Type = %q, want image/png", ct)
+		}
+		if cd := rec.Header().Get("Content-Disposition"); cd != "" {
+			t.Errorf("Content-Disposition = %q, want empty for an inline-safe type", cd)
+		}
+		if rec.Body.String() != "pngbytes" {
+			t.Errorf("body = %q, want %q", rec.Body.String(), "pngbytes")
+		}
+	})
+
+	t.Run("view=1 on a type not on the allowlist is downgraded to octet-stream with an attachment header", func(t *testing.T) {
+		f := newS3Fixture(t, "getone-view-unsafe-bucket")
+		f.PutTestObject("page.html", "<script>evil()</script>", "text/html")
+
+		req := newGetOneObjectRequest(f.bucket, "page.html", url.Values{"view": {"1"}})
+		rec := httptest.NewRecorder()
+		(&Browse{}).GetOneObject(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/octet-stream" {
+			t.Errorf("Content-Type = %q, want application/octet-stream", ct)
+		}
+		if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") {
+			t.Errorf("Content-Disposition = %q, want it to contain attachment", cd)
+		}
+	})
+
+	t.Run("dl=1 always sets an attachment Content-Disposition", func(t *testing.T) {
+		f := newS3Fixture(t, "getone-dl-bucket")
+		f.PutTestObject("photo.png", "pngbytes", "image/png")
+
+		req := newGetOneObjectRequest(f.bucket, "photo.png", url.Values{"dl": {"1"}})
+		rec := httptest.NewRecorder()
+		(&Browse{}).GetOneObject(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") {
+			t.Errorf("Content-Disposition = %q, want it to contain attachment even for an inline-safe type", cd)
+		}
+	})
+
+	t.Run("a missing object is a 404, not a 500", func(t *testing.T) {
+		f := newS3Fixture(t, "getone-missing-bucket")
+
+		req := newGetOneObjectRequest(f.bucket, "nope.txt", nil)
+		rec := httptest.NewRecorder()
+		(&Browse{}).GetOneObject(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404, body=%s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func newPutObjectRequest(t *testing.T, bucket, key string, content []byte) *http.Request {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("file", "upload.bin")
+	if err != nil {
+		t.Fatalf("cannot create form file: %v", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("cannot write form file content: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("cannot close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/browse/"+bucket+"/"+key, &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.ContentLength = int64(buf.Len())
+	req.SetPathValue("bucket", bucket)
+	req.SetPathValue("key", key)
+	return req
+}
+
+func TestPutObject(t *testing.T) {
+	t.Run("a normal upload succeeds and the fake receives the expected key and body", func(t *testing.T) {
+		f := newS3Fixture(t, "putobject-normal-bucket")
+
+		req := newPutObjectRequest(t, f.bucket, "uploads/report.txt", []byte("hello world"))
+		rec := httptest.NewRecorder()
+		(&Browse{}).PutObject(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		if got := f.ObjectBody("uploads/report.txt"); got != "hello world" {
+			t.Errorf("fake stored body = %q, want %q", got, "hello world")
+		}
+	})
+
+	t.Run("an upload larger than MAX_UPLOAD_SIZE_MB is rejected with 413 before touching S3", func(t *testing.T) {
+		f := newS3Fixture(t, "putobject-toolarge-bucket")
+		t.Setenv("MAX_UPLOAD_SIZE_MB", "1")
+
+		req := newPutObjectRequest(t, f.bucket, "big.bin", []byte("small body, but ContentLength lies"))
+		req.ContentLength = 2 << 20 // 2 MiB, over the 1 MiB cap set above
+
+		rec := httptest.NewRecorder()
+		(&Browse{}).PutObject(rec, req)
+
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413, body=%s", rec.Code, rec.Body.String())
+		}
+		if rec.Body.Len() == 0 {
+			t.Error("response body is empty, want a readable error message")
+		}
+		if len(f.Requests()) != 0 {
+			t.Errorf("fake S3 saw %d requests, want 0 (the 413 must be answered before any S3 call)", len(f.Requests()))
+		}
+	})
+
+	t.Run("an empty or generic content-type is resolved from the key's extension", func(t *testing.T) {
+		f := newS3Fixture(t, "putobject-contenttype-bucket")
+
+		req := newPutObjectRequest(t, f.bucket, "assets/logo.svg", []byte("<svg/>"))
+		rec := httptest.NewRecorder()
+		(&Browse{}).PutObject(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		if len(f.Requests()) != 1 {
+			t.Fatalf("fake saw %d requests, want 1", len(f.Requests()))
+		}
+		// The fake's default PutObject handler stores whatever Content-Type
+		// header the SDK actually sent, so this proves the resolution happened
+		// end to end, not just in the unit-level TestResolveUploadContentType.
+		if ct := f.ObjectContentType("assets/logo.svg"); ct != "image/svg+xml" {
+			t.Errorf("stored Content-Type = %q, want %q", ct, "image/svg+xml")
+		}
+	})
+}
+
+func newDeleteObjectRequest(bucket, key string, recursive bool) *http.Request {
+	target := "/browse/" + bucket + "/" + key
+	if recursive {
+		target += "?recursive=true"
+	}
+	req := httptest.NewRequest(http.MethodDelete, target, nil)
+	req.SetPathValue("bucket", bucket)
+	req.SetPathValue("key", key)
+	return req
+}
+
+func TestDeleteObject(t *testing.T) {
+	t.Run("a single-object delete calls the fake once with that key", func(t *testing.T) {
+		f := newS3Fixture(t, "deleteobject-single-bucket")
+		f.PutTestObject("solo.txt", "x", "text/plain")
+
+		req := newDeleteObjectRequest(f.bucket, "solo.txt", false)
+		rec := httptest.NewRecorder()
+		(&Browse{}).DeleteObject(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		if f.HasObject("solo.txt") {
+			t.Error("solo.txt is still present in the fake, want it deleted")
+		}
+
+		var deleteCalls int
+		for _, r := range f.Requests() {
+			if r.Method == http.MethodDelete {
+				deleteCalls++
+			}
+		}
+		if deleteCalls != 1 {
+			t.Errorf("fake saw %d DELETE calls, want 1", deleteCalls)
+		}
+	})
+
+	t.Run("a recursive delete spanning two ListObjectsV2 pages deletes every key from both pages", func(t *testing.T) {
+		f := newS3Fixture(t, "deleteobject-recursive-bucket")
+		f.PutTestObject("dir/a.txt", "a", "text/plain")
+		f.PutTestObject("dir/b.txt", "b", "text/plain")
+
+		var listCalls int32
+		f.onListObjectsV2 = func(w http.ResponseWriter, r *http.Request) bool {
+			n := atomic.AddInt32(&listCalls, 1)
+			if n == 1 {
+				f.writeListObjectsV2(w, []string{"dir/a.txt"}, nil, true, "page-2")
+			} else {
+				f.writeListObjectsV2(w, []string{"dir/b.txt"}, nil, false, "")
+			}
+			return true
+		}
+
+		req := newDeleteObjectRequest(f.bucket, "dir/", true)
+		rec := httptest.NewRecorder()
+		(&Browse{}).DeleteObject(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		if got := atomic.LoadInt32(&listCalls); got != 2 {
+			t.Fatalf("fake saw %d ListObjectsV2 calls, want 2 (the pagination loop must follow NextContinuationToken)", got)
+		}
+		if f.HasObject("dir/a.txt") || f.HasObject("dir/b.txt") {
+			t.Errorf("recursive delete left objects behind: dir/a.txt present=%v dir/b.txt present=%v", f.HasObject("dir/a.txt"), f.HasObject("dir/b.txt"))
+		}
+
+		var got struct {
+			Deleted int `json:"deleted"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("cannot decode response: %v", err)
+		}
+		if got.Deleted != 2 {
+			t.Errorf("deleted = %d, want 2", got.Deleted)
+		}
+	})
+}
+
+func TestBulkDeleteObjects(t *testing.T) {
+	t.Run("a partial failure names the failed key and still reports the successes", func(t *testing.T) {
+		f := newS3Fixture(t, "bulkdelete-partial-bucket")
+		f.PutTestObject("ok.txt", "x", "text/plain")
+		f.PutTestObject("bad.txt", "y", "text/plain")
+		f.FailDelete("bad.txt")
+
+		body, _ := json.Marshal(map[string]any{"action": "delete", "keys": []string{"ok.txt", "bad.txt"}})
+		req := httptest.NewRequest(http.MethodPost, "/browse/"+f.bucket, bytes.NewReader(body))
+		req.SetPathValue("bucket", f.bucket)
+		rec := httptest.NewRecorder()
+		(&Browse{}).BulkDeleteObjects(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+
+		var got struct {
+			Deleted int                 `json:"deleted"`
+			Errors  []map[string]string `json:"errors"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("cannot decode response: %v", err)
+		}
+		if got.Deleted != 1 {
+			t.Errorf("deleted = %d, want 1", got.Deleted)
+		}
+		if len(got.Errors) != 1 || got.Errors[0]["key"] != "bad.txt" {
+			t.Errorf("errors = %v, want exactly one entry naming bad.txt", got.Errors)
+		}
+		if f.HasObject("ok.txt") {
+			t.Error("ok.txt is still present, want it deleted")
+		}
+		if !f.HasObject("bad.txt") {
+			t.Error("bad.txt was deleted despite the induced failure, want it to remain")
+		}
+	})
+}
+
+func TestListMultipartUploads(t *testing.T) {
+	f := newS3Fixture(t, "listmultipart-bucket")
+	f.SeedUpload("big/video.mp4", "upload-1")
+	f.SeedUpload("big/other.mp4", "upload-2")
+
+	req := httptest.NewRequest(http.MethodGet, "/multipart/"+f.bucket, nil)
+	req.SetPathValue("bucket", f.bucket)
+	rec := httptest.NewRecorder()
+	(&Browse{}).ListMultipartUploads(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var got struct {
+		Uploads []struct {
+			Key      string `json:"key"`
+			UploadID string `json:"uploadId"`
+		} `json:"uploads"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("cannot decode response: %v", err)
+	}
+	if len(got.Uploads) != 2 {
+		t.Fatalf("uploads = %v, want 2 entries", got.Uploads)
+	}
+	seen := map[string]bool{}
+	for _, u := range got.Uploads {
+		seen[u.Key+"|"+u.UploadID] = true
+	}
+	if !seen["big/video.mp4|upload-1"] || !seen["big/other.mp4|upload-2"] {
+		t.Errorf("uploads = %v, want both seeded uploads present", got.Uploads)
+	}
+}
+
+func TestAbortMultipartUpload(t *testing.T) {
+	t.Run("aborts a single upload", func(t *testing.T) {
+		f := newS3Fixture(t, "abortmultipart-single-bucket")
+		f.SeedUpload("big/video.mp4", "upload-1")
+
+		req := httptest.NewRequest(http.MethodDelete, "/multipart/"+f.bucket+"?key=big%2Fvideo.mp4&uploadId=upload-1", nil)
+		req.SetPathValue("bucket", f.bucket)
+		rec := httptest.NewRecorder()
+		(&Browse{}).AbortMultipartUpload(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		if f.UploadCount() != 0 {
+			t.Errorf("upload count = %d, want 0", f.UploadCount())
+		}
+	})
+
+	t.Run("aborts every upload when all=true", func(t *testing.T) {
+		f := newS3Fixture(t, "abortmultipart-all-bucket")
+		f.SeedUpload("a.mp4", "upload-1")
+		f.SeedUpload("b.mp4", "upload-2")
+
+		req := httptest.NewRequest(http.MethodDelete, "/multipart/"+f.bucket+"?all=true", nil)
+		req.SetPathValue("bucket", f.bucket)
+		rec := httptest.NewRecorder()
+		(&Browse{}).AbortMultipartUpload(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		if f.UploadCount() != 0 {
+			t.Errorf("upload count = %d, want 0", f.UploadCount())
+		}
+
+		var got struct {
+			Aborted int `json:"aborted"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("cannot decode response: %v", err)
+		}
+		if got.Aborted != 2 {
+			t.Errorf("aborted = %d, want 2", got.Aborted)
+		}
+	})
+}
+
+func newShareObjectRequest(bucket, key string, query url.Values) *http.Request {
+	target := "/share/" + bucket + "/" + key
+	if len(query) > 0 {
+		target += "?" + query.Encode()
+	}
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.SetPathValue("bucket", bucket)
+	req.SetPathValue("key", key)
+	return req
+}
+
+func TestShareObject(t *testing.T) {
+	t.Run("returns a presigned URL from the public endpoint, with the default expiry", func(t *testing.T) {
+		f := newS3Fixture(t, "share-default-bucket")
+		f.EnableSharing()
+
+		req := newShareObjectRequest(f.bucket, "photo.png", nil)
+		rec := httptest.NewRecorder()
+		(&Browse{}).ShareObject(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		var got struct {
+			URL            string `json:"url"`
+			ExpiresSeconds int    `json:"expiresSeconds"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("cannot decode response: %v", err)
+		}
+		if got.ExpiresSeconds != 3600 {
+			t.Errorf("expiresSeconds = %d, want 3600 (the default)", got.ExpiresSeconds)
+		}
+		if !strings.Contains(got.URL, "public.example.test") {
+			t.Errorf("url = %q, want it signed against the public endpoint (public.example.test), not the internal S3 endpoint", got.URL)
+		}
+		// PresignGetObject signs locally and never dials the endpoint, so no
+		// request should have reached the fake S3 server.
+		if len(f.Requests()) != 0 {
+			t.Errorf("fake S3 saw %d requests, want 0 (presigning must be local)", len(f.Requests()))
+		}
+	})
+
+	t.Run("an expiry above the 7-day ceiling is clamped", func(t *testing.T) {
+		f := newS3Fixture(t, "share-clamp-bucket")
+		f.EnableSharing()
+
+		req := newShareObjectRequest(f.bucket, "photo.png", url.Values{"expires": {"999999999"}})
+		rec := httptest.NewRecorder()
+		(&Browse{}).ShareObject(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		var got struct {
+			ExpiresSeconds int `json:"expiresSeconds"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("cannot decode response: %v", err)
+		}
+		if got.ExpiresSeconds != 604800 {
+			t.Errorf("expiresSeconds = %d, want 604800 (the 7-day SigV4 ceiling)", got.ExpiresSeconds)
+		}
+	})
+
+	t.Run("returns a clear error, not a panic, when sharing is not configured", func(t *testing.T) {
+		f := newS3Fixture(t, "share-disabled-bucket")
+		t.Setenv("S3_PUBLIC_ENDPOINT_URL", "")
+
+		req := newShareObjectRequest(f.bucket, "photo.png", nil)
+		rec := httptest.NewRecorder()
+		(&Browse{}).ShareObject(rec, req)
+
+		if rec.Code != http.StatusNotImplemented {
+			t.Errorf("status = %d, want 501, body=%s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "sharing is not enabled") {
+			t.Errorf("body = %q, want it to mention sharing is not enabled", rec.Body.String())
+		}
 	})
 }
