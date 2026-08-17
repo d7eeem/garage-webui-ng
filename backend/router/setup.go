@@ -53,10 +53,11 @@ func (c *Setup) GetStatus(w http.ResponseWriter, r *http.Request) {
 // the Renew that stops a pre-planted session ID from becoming an
 // authenticated one. Keep the two in sync.
 func (c *Setup) Create(w http.ResponseWriter, r *http.Request) {
-	// Shares the login limiter: an unauthenticated write endpoint should not
-	// be a free-running loop for anyone who can reach the port, even before
-	// the store guard makes further attempts pointless.
-	if !loginAttempts.allow(clientIP(r), time.Now()) {
+	// Its own budget (setupAttempts, not the login limiter): an unauthenticated
+	// write endpoint should not be a free-running loop for anyone who can reach
+	// the port, even before the store guard makes further attempts pointless,
+	// and it must not share its allowance with unrelated login attempts.
+	if !setupAttempts.allow(clientAddr(r), time.Now()) {
 		utils.ResponseErrorStatus(w, errors.New("too many setup attempts, try again later"), http.StatusTooManyRequests)
 		return
 	}
