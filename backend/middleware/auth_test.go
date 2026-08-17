@@ -3,10 +3,80 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/alexedwards/scs/v2"
+	"github.com/d7eeem/garage-webui-ng/store"
 	"github.com/d7eeem/garage-webui-ng/utils"
 )
+
+// newAuthTestStore opens a throwaway on-disk store (mirrors
+// backend/store/store_test.go's newTestStore), installs it as the process
+// default for the duration of the test, and restores whatever was installed
+// before. It also clears the revalidation cache before and after, so no state
+// leaks between test cases that reuse a username.
+func newAuthTestStore(t *testing.T) *store.Store {
+	t.Helper()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "users.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	prev := store.Default()
+	store.SetDefault(st)
+	t.Cleanup(func() { store.SetDefault(prev) })
+
+	resetCallerCache()
+	t.Cleanup(resetCallerCache)
+
+	return st
+}
+
+// resetCallerCache clears the middleware's local revalidation cache. Tests
+// call it to guarantee a store lookup actually happens rather than being
+// served from a stale entry left by an earlier test case.
+func resetCallerCache() {
+	callerCacheMu.Lock()
+	callerCache = map[string]cachedCaller{}
+	callerCacheMu.Unlock()
+}
+
+// authRequest serves one request through sessMgr.LoadAndSave(AuthMiddleware(next)),
+// with the session pre-seeded with the given authenticated/username/role
+// values (role is what the OLD code trusted; tests that want to prove the
+// store wins set it to something the store row disagrees with). Returns the
+// response code and whether next ran.
+func authRequest(t *testing.T, sessMgr *scs.SessionManager, authenticated bool, username, sessionRole, method, target string) (code int, reached bool) {
+	t.Helper()
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := sessMgr.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if authenticated {
+			utils.Session.Set(r, "authenticated", true)
+		}
+		if username != "" {
+			utils.Session.Set(r, "username", username)
+		}
+		if sessionRole != "" {
+			utils.Session.Set(r, "role", sessionRole)
+		}
+		rec := httptest.NewRecorder()
+		AuthMiddleware(next).ServeHTTP(rec, r)
+		code = rec.Code
+	}))
+
+	req := httptest.NewRequest(method, target, nil)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	return code, reached
+}
 
 // TestIsViewerAllowed exercises the entire security boundary for the
 // read-only viewer role. It must stay fail-closed: any non-GET request that
@@ -291,27 +361,19 @@ func TestAuthMiddlewareAllowsSetupPaths(t *testing.T) {
 }
 
 // TestAuthMiddlewareViewerForbidden: an authenticated viewer session still
-// gets 403 on a write, and 200 on a read.
+// gets 403 on a write, and 200 on a read. The role now comes from the store
+// row, not the session, so the fixture creates a real viewer account.
 func TestAuthMiddlewareViewerForbidden(t *testing.T) {
 	sessMgr := utils.InitSessionManager()
-
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
+	st := newAuthTestStore(t)
+	if _, err := st.CreateUser(t.Context(), "a-viewer", "correct-horse-battery", store.RoleViewer); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
 
 	// Seed an authenticated viewer session inside the scs middleware, then
 	// call the guarded handler in the same request context.
 	serve := func(method, target string) int {
-		var code int
-		handler := sessMgr.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			utils.Session.Set(r, "authenticated", true)
-			utils.Session.Set(r, "role", "viewer")
-			rec := httptest.NewRecorder()
-			AuthMiddleware(next).ServeHTTP(rec, r)
-			code = rec.Code
-		}))
-		req := httptest.NewRequest(method, target, nil)
-		handler.ServeHTTP(httptest.NewRecorder(), req)
+		code, _ := authRequest(t, sessMgr, true, "a-viewer", "viewer", method, target)
 		return code
 	}
 
@@ -329,41 +391,189 @@ func TestAuthMiddlewareViewerForbidden(t *testing.T) {
 // TestAuthMiddlewareAdminAPIIsAdminOnly is the middleware half of the two-layer
 // guard on user administration: a viewer session is stopped here, before the
 // handler runs at all, while an administrator passes straight through. The
-// other half is requireAdmin inside every /admin/* handler.
+// other half is requireAdmin inside every /admin/* handler. Each role is
+// backed by a real store row, since that is what the middleware now consults.
 func TestAuthMiddlewareAdminAPIIsAdminOnly(t *testing.T) {
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	// serve seeds an authenticated session with the given role inside the scs
-	// middleware, then calls the guarded handler in that same request context.
-	serve := func(role, method, target string) (int, bool) {
-		var (
-			code    int
-			reached bool
-		)
-		sessMgr := utils.InitSessionManager()
-		handler := sessMgr.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			utils.Session.Set(r, "authenticated", true)
-			utils.Session.Set(r, "role", role)
-			rec := httptest.NewRecorder()
-			AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				reached = true
-				next.ServeHTTP(w, r)
-			})).ServeHTTP(rec, r)
-			code = rec.Code
-		}))
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, target, nil))
-		return code, reached
+	st := newAuthTestStore(t)
+	if _, err := st.CreateUser(t.Context(), "an-admin", "correct-horse-battery", store.RoleAdmin); err != nil {
+		t.Fatalf("CreateUser(admin): %v", err)
+	}
+	if _, err := st.CreateUser(t.Context(), "a-viewer", "correct-horse-battery", store.RoleViewer); err != nil {
+		t.Fatalf("CreateUser(viewer): %v", err)
 	}
 
-	if code, reached := serve("viewer", http.MethodGet, "/admin/users"); code != http.StatusForbidden || reached {
+	serve := func(username, method, target string) (int, bool) {
+		sessMgr := utils.InitSessionManager()
+		return authRequest(t, sessMgr, true, username, "", method, target)
+	}
+
+	if code, reached := serve("a-viewer", http.MethodGet, "/admin/users"); code != http.StatusForbidden || reached {
 		t.Errorf("viewer GET /admin/users = %d (handler reached = %v), want 403 and not reached", code, reached)
 	}
-	if code, reached := serve("admin", http.MethodGet, "/admin/users"); code != http.StatusOK || !reached {
+	if code, reached := serve("an-admin", http.MethodGet, "/admin/users"); code != http.StatusOK || !reached {
 		t.Errorf("admin GET /admin/users = %d (handler reached = %v), want 200 and reached", code, reached)
 	}
-	if code, reached := serve("admin", http.MethodDelete, "/admin/users/1"); code != http.StatusOK || !reached {
+	if code, reached := serve("an-admin", http.MethodDelete, "/admin/users/1"); code != http.StatusOK || !reached {
 		t.Errorf("admin DELETE /admin/users/1 = %d (handler reached = %v), want 200 and reached", code, reached)
 	}
+}
+
+// TestAuthMiddlewareRevalidatesAgainstStore is the regression suite for plan
+// 052: authorization must be re-checked against the user store on every
+// request, not trusted from the session snapshot taken at login.
+func TestAuthMiddlewareRevalidatesAgainstStore(t *testing.T) {
+	t.Run("a disabled user is rejected on the next request", func(t *testing.T) {
+		sessMgr := utils.InitSessionManager()
+		st := newAuthTestStore(t)
+		u, err := st.CreateUser(t.Context(), "will-be-disabled", "correct-horse-battery", store.RoleAdmin)
+		if err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+
+		if code, reached := authRequest(t, sessMgr, true, u.Username, store.RoleAdmin, http.MethodGet, "/buckets"); code != http.StatusOK || !reached {
+			t.Fatalf("before disabling: status = %d, reached = %v, want 200 and reached", code, reached)
+		}
+
+		if err := st.SetDisabled(t.Context(), u.ID, true); err != nil {
+			t.Fatalf("SetDisabled: %v", err)
+		}
+		resetCallerCache() // force the next request to re-query the store
+
+		code, reached := authRequest(t, sessMgr, true, u.Username, store.RoleAdmin, http.MethodGet, "/buckets")
+		if code != http.StatusUnauthorized {
+			t.Errorf("after disabling: status = %d, want 401", code)
+		}
+		if reached {
+			t.Error("the wrapped handler ran for a disabled account")
+		}
+	})
+
+	t.Run("a demoted admin loses admin access even though the session still says admin", func(t *testing.T) {
+		sessMgr := utils.InitSessionManager()
+		st := newAuthTestStore(t)
+		u, err := st.CreateUser(t.Context(), "will-be-demoted", "correct-horse-battery", store.RoleViewer)
+		if err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+
+		// Session claims admin; the store row says viewer. The store must win.
+		code, reached := authRequest(t, sessMgr, true, u.Username, store.RoleAdmin, http.MethodPost, "/v2/CreateBucket")
+		if code != http.StatusForbidden {
+			t.Errorf("status = %d, want 403 (store role, not session role, must govern)", code)
+		}
+		if reached {
+			t.Error("the wrapped handler ran for a viewer-level write")
+		}
+	})
+
+	t.Run("a deleted user is rejected, not passed through and not a 500", func(t *testing.T) {
+		sessMgr := utils.InitSessionManager()
+		st := newAuthTestStore(t)
+		u, err := st.CreateUser(t.Context(), "will-be-deleted", "correct-horse-battery", store.RoleAdmin)
+		if err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+		if err := st.DeleteUser(t.Context(), u.ID); err != nil {
+			t.Fatalf("DeleteUser: %v", err)
+		}
+
+		code, reached := authRequest(t, sessMgr, true, u.Username, store.RoleAdmin, http.MethodGet, "/buckets")
+		if code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401", code)
+		}
+		if reached {
+			t.Error("the wrapped handler ran for a deleted account")
+		}
+	})
+
+	t.Run("a promoted viewer gains access even though the session still says viewer", func(t *testing.T) {
+		sessMgr := utils.InitSessionManager()
+		st := newAuthTestStore(t)
+		u, err := st.CreateUser(t.Context(), "will-be-promoted", "correct-horse-battery", store.RoleAdmin)
+		if err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+
+		// Session claims viewer; the store row says admin. A write must be
+		// allowed, proving the role is read fresh in both directions.
+		code, reached := authRequest(t, sessMgr, true, u.Username, store.RoleViewer, http.MethodPost, "/v2/CreateBucket")
+		if code != http.StatusOK || !reached {
+			t.Errorf("status = %d, reached = %v, want 200 and reached", code, reached)
+		}
+	})
+
+	t.Run("store.Default() == nil is a 500, not a 401", func(t *testing.T) {
+		sessMgr := utils.InitSessionManager()
+
+		prev := store.Default()
+		store.SetDefault(nil)
+		t.Cleanup(func() { store.SetDefault(prev) })
+		resetCallerCache()
+		t.Cleanup(resetCallerCache)
+
+		code, reached := authRequest(t, sessMgr, true, "anyone", store.RoleAdmin, http.MethodGet, "/buckets")
+		if code != http.StatusInternalServerError {
+			t.Errorf("status = %d, want 500", code)
+		}
+		if reached {
+			t.Error("the wrapped handler ran with no store installed")
+		}
+	})
+
+	t.Run("public paths still bypass the store lookup entirely", func(t *testing.T) {
+		sessMgr := utils.InitSessionManager()
+
+		// Point at a nil store: if the middleware performed a lookup at all for
+		// a public path, this would 500 instead of 200.
+		prev := store.Default()
+		store.SetDefault(nil)
+		t.Cleanup(func() { store.SetDefault(prev) })
+		resetCallerCache()
+		t.Cleanup(resetCallerCache)
+
+		code, reached := authRequest(t, sessMgr, false, "", "", http.MethodGet, "/auth/status")
+		if code != http.StatusOK || !reached {
+			t.Errorf("GET /auth/status with nil store = %d (reached = %v), want 200 and reached", code, reached)
+		}
+	})
+
+	t.Run("the cache expires so a status change is observed without a new login", func(t *testing.T) {
+		sessMgr := utils.InitSessionManager()
+		st := newAuthTestStore(t)
+		u, err := st.CreateUser(t.Context(), "cache-expiry", "correct-horse-battery", store.RoleAdmin)
+		if err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+
+		base := time.Now()
+		prevNow := nowFunc
+		nowFunc = func() time.Time { return base }
+		t.Cleanup(func() { nowFunc = prevNow })
+
+		if code, _ := authRequest(t, sessMgr, true, u.Username, store.RoleAdmin, http.MethodGet, "/buckets"); code != http.StatusOK {
+			t.Fatalf("initial request: status = %d, want 200", code)
+		}
+
+		if err := st.SetDisabled(t.Context(), u.ID, true); err != nil {
+			t.Fatalf("SetDisabled: %v", err)
+		}
+
+		// Still within the TTL: the cached (enabled) entry must still be
+		// served, without re-querying the store.
+		nowFunc = func() time.Time { return base.Add(callerCacheTTL - time.Millisecond) }
+		if code, reached := authRequest(t, sessMgr, true, u.Username, store.RoleAdmin, http.MethodGet, "/buckets"); code != http.StatusOK || !reached {
+			t.Fatalf("within TTL: status = %d, reached = %v, want 200 and reached (stale cache should still apply)", code, reached)
+		}
+
+		// Past the TTL: the cache entry has expired, so the disabled status
+		// must now be observed.
+		nowFunc = func() time.Time { return base.Add(callerCacheTTL + time.Millisecond) }
+		code, reached := authRequest(t, sessMgr, true, u.Username, store.RoleAdmin, http.MethodGet, "/buckets")
+		if code != http.StatusUnauthorized {
+			t.Errorf("after TTL: status = %d, want 401", code)
+		}
+		if reached {
+			t.Error("the wrapped handler ran after the disabled status should have been observed")
+		}
+	})
 }
