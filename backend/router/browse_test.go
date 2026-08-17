@@ -429,6 +429,79 @@ func TestDeleteResponseErrorsSerializesAsEmptyArray(t *testing.T) {
 	})
 }
 
+// TestGetOneObjectNoQueryParamsTakesMetadataPath pins the one behavioral risk
+// in plan 053 (removing the `thumb=1` thumbnail branch): the guard that used
+// to read `if !view && !download && !thumbnail` must still route a request
+// carrying none of view/download/dl to the HeadObject metadata path, not to
+// GetObject. It is deliberately proven against the real handler and a mock S3
+// backend — HeadObject and GetObject hit different HTTP methods on path-style
+// S3, so a request landing on the GetObject mock (which answers 404 for any
+// method other than HEAD here) would fail this test rather than silently
+// passing.
+func TestGetOneObjectNoQueryParamsTakesMetadataPath(t *testing.T) {
+	utils.InitCacheManager()
+
+	const bucket = "metadata-path-bucket"
+	const accessKeyID = "AKIATESTMETADATA"
+	const key = "note.txt"
+
+	adminServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v2/GetBucketInfo"):
+			_ = json.NewEncoder(w).Encode(schema.Bucket{
+				Keys: []schema.KeyElement{
+					{
+						AccessKeyID: accessKeyID,
+						Permissions: schema.Permissions{Read: true, Write: true},
+					},
+				},
+			})
+		case strings.HasPrefix(r.URL.Path, "/v2/GetKeyInfo"):
+			_ = json.NewEncoder(w).Encode(schema.KeyElement{
+				AccessKeyID:     accessKeyID,
+				SecretAccessKey: "test-secret",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer adminServer.Close()
+
+	// Mock S3 API (path-style): only answers HEAD for the object. A GET here
+	// (the GetObject call the view/download branches would make) returns 404,
+	// so this test fails loudly if the guard change ever sends a
+	// no-query-params request down the GetObject path instead.
+	s3Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", "5")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer s3Server.Close()
+
+	t.Setenv("API_BASE_URL", adminServer.URL)
+	t.Setenv("S3_ENDPOINT_URL", s3Server.URL)
+
+	withDownloadSession(t, "alice", func(r *http.Request) {
+		req := httptest.NewRequest(http.MethodGet, "/browse/"+bucket+"/"+key, nil).WithContext(r.Context())
+		req.SetPathValue("bucket", bucket)
+		req.SetPathValue("key", key)
+		rec := httptest.NewRecorder()
+		(&Browse{}).GetOneObject(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q, want %q (the metadata path's ResponseSuccess JSON, not a raw object body)", ct, "application/json")
+		}
+	})
+}
+
 // browseMuxKey routes an already-encoded /browse/{bucket}/{key...} path
 // through a mux matching the real route pattern (see router.go) and returns
 // the decoded key, mirroring the setup in TestPathValueDecodesWildcard. Used
