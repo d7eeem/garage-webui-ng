@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,6 +211,27 @@ func TestClientAddrTrustedProxyHeaderFallsBackWhenAbsent(t *testing.T) {
 
 	if got, want := clientAddr(r), "203.0.113.50"; got != want {
 		t.Errorf("clientAddr() = %q, want %q (must fall back to RemoteAddr when the configured header is absent)", got, want)
+	}
+}
+
+// TestClientAddrTrustedProxyHeaderUsesLastLine: some proxies (HAProxy) append
+// their own X-Forwarded-For line rather than merging into an existing one,
+// leaving any client-supplied line first. r.Header.Get only ever returns the
+// first line, so a naive implementation would let the client's own line win —
+// exactly the spoof the "last hop" rule exists to prevent. clientAddr must
+// read every line (r.Header.Values) and use the last one.
+func TestClientAddrTrustedProxyHeaderUsesLastLine(t *testing.T) {
+	t.Setenv("TRUSTED_PROXY_HEADER", "X-Forwarded-For")
+
+	r := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	r.RemoteAddr = "10.0.0.1:1"
+	// A spoofed line arrives first, as it would through a proxy that appends
+	// its own header line rather than merging into the client's.
+	r.Header.Add("X-Forwarded-For", "6.6.6.6")
+	r.Header.Add("X-Forwarded-For", "1.2.3.4, 5.6.7.8")
+
+	if got, want := clientAddr(r), "5.6.7.8"; got != want {
+		t.Errorf("clientAddr() = %q, want %q (must use the last entry of the last header line, not the client-supplied first line)", got, want)
 	}
 }
 
@@ -808,5 +830,30 @@ func TestLoginWithoutStore(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// TestLoginRejectsOversizedBody: keying the rate limiter on the username
+// means every request now reaches the JSON decoder, including one that will
+// ultimately be refused. Without a cap on the body, that decode is an
+// unbounded read of an attacker-chosen body on an unauthenticated endpoint.
+// The oversized body must surface through the same decode-error response
+// path as any other malformed body — it must not authenticate, and it must
+// not succeed.
+func TestLoginRejectsOversizedBody(t *testing.T) {
+	sessMgr := utils.InitSessionManager()
+	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).Login))
+
+	oversized := `{"username":"alice","password":"` + strings.Repeat("x", 2<<20) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(oversized))
+	req.RemoteAddr = "203.0.113.60:1"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("oversized body: status = %d, want a failure status, not 200", w.Code)
+	}
+	if cookie := w.Header().Get("Set-Cookie"); cookie != "" {
+		t.Errorf("oversized body set a cookie: %q", cookie)
 	}
 }

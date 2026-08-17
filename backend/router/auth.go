@@ -145,24 +145,30 @@ func clientIP(r *http.Request) string {
 // process. That is exactly why honouring one is opt-in, off by default, and
 // configured by naming the exact header to trust rather than guessed.
 //
-// When TRUSTED_PROXY_HEADER names a header, its value is used instead. Header
-// values may be a comma-separated chain (X-Forwarded-For's format): the last
-// entry is the one appended by the trusted proxy itself, while every earlier
-// entry — including the first — was written by whoever made the request and is
-// freely spoofed. If the header is configured but absent or empty on a given
-// request, this falls back to clientIP rather than to a shared empty key.
+// When TRUSTED_PROXY_HEADER names a header, its value is used instead. A
+// request can carry the named header as more than one line — some proxies
+// (nginx) merge a forwarded chain onto a single line, but others (HAProxy)
+// append a separate line of their own, leaving any client-supplied line
+// first. r.Header.Get only ever returns the first line, so this reads all of
+// them and takes the LAST line, then within that line the LAST
+// comma-separated entry — the one appended by the trusted proxy itself. Every
+// earlier entry, and every earlier line, was written by whoever made the
+// request and is freely spoofed. If the header is configured but absent or
+// empty on a given request, this falls back to clientIP rather than to a
+// shared empty key.
 func clientAddr(r *http.Request) string {
 	headerName := utils.GetEnv("TRUSTED_PROXY_HEADER", "")
 	if headerName == "" {
 		return clientIP(r)
 	}
 
-	value := r.Header.Get(headerName)
-	if value == "" {
+	values := r.Header.Values(headerName)
+	if len(values) == 0 {
 		return clientIP(r)
 	}
 
-	parts := strings.Split(value, ",")
+	lastLine := values[len(values)-1]
+	parts := strings.Split(lastLine, ",")
 	last := strings.TrimSpace(parts[len(parts)-1])
 	if last == "" {
 		return clientIP(r)
@@ -178,6 +184,14 @@ func loginKey(addr, username string) string {
 }
 
 func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
+	// Cap the body before decoding: the rate-limit check below now needs the
+	// username out of the body first, so every request — including one that
+	// will be refused as rate-limited — reaches the decoder. Without a limit
+	// that turns json.Decode into an uncapped read of an attacker-chosen body
+	// on an unauthenticated endpoint. 1 MiB is generous for a username and
+	// password.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
