@@ -54,7 +54,7 @@ jobs:
           # to whatever 1.25.x it has cached, which is how a vulnerable stdlib
           # patch reached a release build. Keep in lockstep with the security
           # job below, release.yml, and the Dockerfile builder image.
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: backend/go.sum
       - name: Build
         run: go build ./...
@@ -76,7 +76,7 @@ jobs:
           # Must match the backend job exactly — govulncheck reports stdlib
           # advisories against the toolchain it runs under, so a different
           # (or floating) version here scans something we do not ship.
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: backend/go.sum
       - name: govulncheck
         run: |
