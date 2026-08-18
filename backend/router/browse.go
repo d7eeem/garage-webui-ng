@@ -92,7 +92,6 @@ func (b *Browse) GetOneObject(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	queryParams := r.URL.Query()
 	view := queryParams.Get("view") == "1"
-	thumbnail := queryParams.Get("thumb") == "1"
 	download := queryParams.Get("dl") == "1"
 
 	client, err := getS3Client(bucket)
@@ -101,7 +100,7 @@ func (b *Browse) GetOneObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !view && !download && !thumbnail {
+	if !view && !download {
 		object, err := client.HeadObject(r.Context(), &s3.HeadObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(key),
@@ -140,24 +139,6 @@ func (b *Browse) GetOneObject(w http.ResponseWriter, r *http.Request) {
 	if download {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Disposition", contentDispositionAttachment(keys[len(keys)-1]))
-	} else if thumbnail {
-		body, err := io.ReadAll(object.Body)
-		if err != nil {
-			utils.ResponseError(w, err)
-			return
-		}
-
-		thumb, err := utils.CreateThumbnailImage(body, 64, 64)
-		if err != nil {
-
-			utils.ResponseError(w, err)
-			return
-		}
-
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Type", "image/jpeg")
-		w.Write(thumb)
-		return
 	}
 
 	w.Header().Set("Cache-Control", "max-age=86400")
