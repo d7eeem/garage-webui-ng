@@ -15,7 +15,7 @@ concurrency:
 jobs:
   frontend:
     name: Frontend (lint · typecheck · test · build)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       # No `version:` here on purpose — package.json's "packageManager" field
@@ -42,7 +42,7 @@ jobs:
 
   backend:
     name: Backend (build · vet · fmt · test)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     defaults:
       run:
         working-directory: backend
@@ -67,7 +67,7 @@ jobs:
 
   security:
     name: Security scanning
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       # Go vulnerability database scan (blocking on known CVEs in reachable code).
