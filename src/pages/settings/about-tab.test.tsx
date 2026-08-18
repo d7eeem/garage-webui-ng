@@ -16,6 +16,7 @@ const mockData = vi.hoisted(() => ({
         checkFailed?: boolean;
         deployment?: "binary" | "managed" | "unknown";
         updateCommand?: string;
+        canSelfUpdate?: boolean;
       }
     | undefined,
 }));
@@ -24,8 +25,14 @@ vi.mock("@/hooks/useConfig", () => ({
   useConfig: () => ({ data: mockData.config }),
 }));
 
+const mockApplyUpdate = vi.hoisted(() => ({
+  mutate: vi.fn(),
+  isPending: false,
+}));
+
 vi.mock("./hooks", () => ({
   useUpdateCheck: () => ({ data: mockData.update }),
+  useApplyUpdate: () => mockApplyUpdate,
 }));
 
 const mockCopyToClipboard = vi.hoisted(() => vi.fn());
@@ -43,6 +50,8 @@ describe("AboutTab", () => {
     mockData.config = undefined;
     mockData.update = undefined;
     mockCopyToClipboard.mockClear();
+    mockApplyUpdate.mutate.mockClear();
+    mockApplyUpdate.isPending = false;
   });
 
   it("renders the version from config", () => {
@@ -195,5 +204,124 @@ describe("AboutTab", () => {
     expect(mockCopyToClipboard).toHaveBeenCalledWith(
       "sudo systemctl stop garage-webui && sudo install -m 0755 ./garage-webui-ng /usr/local/bin/garage-webui-ng && sudo systemctl start garage-webui"
     );
+  });
+
+  describe("in-browser update (POST /update/apply)", () => {
+    it("shows no Update now button when canSelfUpdate is false", () => {
+      mockData.config = { version: "v3.3.0" };
+      mockData.update = {
+        enabled: true,
+        current: "v3.3.0",
+        latest: "v3.4.0",
+        updateAvailable: true,
+        canSelfUpdate: false,
+      };
+
+      render(<AboutTab />);
+
+      expect(
+        screen.queryByRole("button", { name: /update now/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("shows no Update now button when canSelfUpdate is absent", () => {
+      mockData.config = { version: "v3.3.0" };
+      mockData.update = {
+        enabled: true,
+        current: "v3.3.0",
+        latest: "v3.4.0",
+        updateAvailable: true,
+      };
+
+      render(<AboutTab />);
+
+      expect(
+        screen.queryByRole("button", { name: /update now/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("shows the Update now button when canSelfUpdate and updateAvailable are both true", () => {
+      mockData.config = { version: "v3.3.0" };
+      mockData.update = {
+        enabled: true,
+        current: "v3.3.0",
+        latest: "v3.4.0",
+        updateAvailable: true,
+        canSelfUpdate: true,
+      };
+
+      render(<AboutTab />);
+
+      expect(
+        screen.getByRole("button", { name: /update now/i })
+      ).toBeInTheDocument();
+    });
+
+    it("clicking Update now, confirmed, calls the mutation with restart: false by default", async () => {
+      const { default: userEvent } = await import("@testing-library/user-event");
+      mockData.config = { version: "v3.3.0" };
+      mockData.update = {
+        enabled: true,
+        current: "v3.3.0",
+        latest: "v3.4.0",
+        updateAvailable: true,
+        canSelfUpdate: true,
+      };
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+
+      render(<AboutTab />);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: /update now/i }));
+
+      expect(window.confirm).toHaveBeenCalled();
+      expect(mockApplyUpdate.mutate).toHaveBeenCalledWith({ restart: false });
+    });
+
+    it("sends restart: true when the restart checkbox is checked first", async () => {
+      const { default: userEvent } = await import("@testing-library/user-event");
+      mockData.config = { version: "v3.3.0" };
+      mockData.update = {
+        enabled: true,
+        current: "v3.3.0",
+        latest: "v3.4.0",
+        updateAvailable: true,
+        canSelfUpdate: true,
+      };
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+
+      render(<AboutTab />);
+
+      const user = userEvent.setup();
+      await user.click(
+        screen.getByLabelText(
+          /restart the service automatically after installing/i
+        )
+      );
+      await user.click(screen.getByRole("button", { name: /update now/i }));
+
+      expect(mockApplyUpdate.mutate).toHaveBeenCalledWith({ restart: true });
+    });
+
+    it("calls nothing when the confirmation is declined", async () => {
+      const { default: userEvent } = await import("@testing-library/user-event");
+      mockData.config = { version: "v3.3.0" };
+      mockData.update = {
+        enabled: true,
+        current: "v3.3.0",
+        latest: "v3.4.0",
+        updateAvailable: true,
+        canSelfUpdate: true,
+      };
+      vi.spyOn(window, "confirm").mockReturnValue(false);
+
+      render(<AboutTab />);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: /update now/i }));
+
+      expect(window.confirm).toHaveBeenCalled();
+      expect(mockApplyUpdate.mutate).not.toHaveBeenCalled();
+    });
   });
 });

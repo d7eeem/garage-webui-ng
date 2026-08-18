@@ -16,6 +16,12 @@ type Config struct{}
 // honest rather than an empty string.
 var AppVersion = "dev"
 
+// ReleasePublicKey is the hex ed25519 public key releases are signed with,
+// injected from main at startup because release_key.go is package main and Go
+// forbids importing it. Empty means this build cannot verify a release, and
+// every self-update path must refuse to run — see selfupdate.go.
+var ReleasePublicKey string
+
 func (c *Config) GetAll(w http.ResponseWriter, r *http.Request) {
 	resp := schema.NewConfigResponse(utils.Garage.Config)
 	resp.Sharing = utils.Garage.IsSharingEnabled()

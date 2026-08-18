@@ -13,6 +13,15 @@ export type UpdateCheck = {
   checkFailed?: boolean;
   deployment?: "binary" | "managed" | "unknown";
   updateCommand?: string;
+  canSelfUpdate?: boolean;
+};
+
+/** POST /update/apply response shape — see backend/router/selfupdate.go. */
+export type ApplyUpdateResult = {
+  version: string;
+  restartRequired: boolean;
+  restarting: boolean;
+  backupPath?: string;
 };
 
 type Options = UseMutationOptions<unknown, Error, ChangePasswordSchema>;
@@ -54,4 +63,25 @@ export const useUpdateCheck = () =>
     queryFn: () => api.get<UpdateCheck>("/update-check"),
     staleTime: 60 * 60 * 1000,
     retry: false,
+  });
+
+type ApplyUpdateOptions = UseMutationOptions<
+  ApplyUpdateResult,
+  Error,
+  { restart: boolean }
+>;
+
+/**
+ * Downloads, verifies and stages the latest release binary
+ * (backend/router/selfupdate.go). The server default (`restart: false`) only
+ * swaps the binary on disk; the running process keeps serving the old
+ * version until an operator restarts it. `restart: true` additionally asks
+ * the server to trigger its own graceful shutdown once the swap succeeds —
+ * callers must obtain their own explicit confirmation for that, separate
+ * from the confirmation for the update itself.
+ */
+export const useApplyUpdate = (options?: ApplyUpdateOptions) =>
+  useMutation<ApplyUpdateResult, Error, { restart: boolean }>({
+    ...options,
+    mutationFn: (body) => api.post("/update/apply", { body }),
   });

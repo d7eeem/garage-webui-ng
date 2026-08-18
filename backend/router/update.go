@@ -49,6 +49,10 @@ type UpdateCheck struct {
 	// UpdateCommand is the shell command an operator runs to update THIS
 	// deployment. Informational only — this service never executes it.
 	UpdateCommand string `json:"updateCommand,omitempty"`
+	// CanSelfUpdate is true when this build could install an update itself:
+	// a signing key is configured AND the executable is writable. Advisory
+	// only — Apply re-checks both, since the answer can change between calls.
+	CanSelfUpdate bool `json:"canSelfUpdate,omitempty"`
 }
 
 type Update struct{}
@@ -68,6 +72,9 @@ func (u *Update) Get(w http.ResponseWriter, r *http.Request) {
 	// expires. See detectDeployment.
 	deployment := detectDeployment()
 	updateCommand := updateCommandFor(deployment)
+	// Advisory capability flag — Apply re-checks both conditions itself, since
+	// either can change between this response and that call.
+	canSelfUpdate := ReleasePublicKey != "" && deployment == deploymentBinary
 
 	if utils.GetEnv("UPDATE_CHECK_ENABLED", "false") != "true" {
 		utils.ResponseSuccess(w, UpdateCheck{
@@ -75,6 +82,7 @@ func (u *Update) Get(w http.ResponseWriter, r *http.Request) {
 			Current:       current,
 			Deployment:    string(deployment),
 			UpdateCommand: updateCommand,
+			CanSelfUpdate: canSelfUpdate,
 		})
 		return
 	}
@@ -83,6 +91,7 @@ func (u *Update) Get(w http.ResponseWriter, r *http.Request) {
 		if result, ok := cached.(UpdateCheck); ok {
 			result.Deployment = string(deployment)
 			result.UpdateCommand = updateCommand
+			result.CanSelfUpdate = canSelfUpdate
 			utils.ResponseSuccess(w, result)
 			return
 		}
@@ -97,6 +106,7 @@ func (u *Update) Get(w http.ResponseWriter, r *http.Request) {
 			CheckFailed:   true,
 			Deployment:    string(deployment),
 			UpdateCommand: updateCommand,
+			CanSelfUpdate: canSelfUpdate,
 		}
 		// Deliberately not cached: a transient GitHub outage should not force
 		// every viewer to see "check failed" for a further 6 hours once GitHub
@@ -117,6 +127,7 @@ func (u *Update) Get(w http.ResponseWriter, r *http.Request) {
 	// snapshot — see the per-request comment above.
 	result.Deployment = string(deployment)
 	result.UpdateCommand = updateCommand
+	result.CanSelfUpdate = canSelfUpdate
 	utils.ResponseSuccess(w, result)
 }
 
