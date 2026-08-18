@@ -20,15 +20,17 @@ import (
 
 type Auth struct{}
 
-// loginLimiter throttles login attempts per client IP. It is deliberately
-// simple: a fixed window with a small allowance, enough to make online
-// password guessing impractical without adding a dependency or a background
-// sweeper goroutine.
+// loginLimiter throttles attempts per key. It is deliberately simple: a fixed
+// window with a small allowance, enough to make online password guessing
+// impractical without adding a dependency or a background sweeper goroutine —
+// the map is instead swept opportunistically inside allow (see sweep) so a
+// long-running process does not accumulate one entry per distinct key forever.
 type loginLimiter struct {
-	mu       sync.Mutex
-	attempts map[string][]time.Time
-	limit    int
-	window   time.Duration
+	mu        sync.Mutex
+	attempts  map[string][]time.Time
+	limit     int
+	window    time.Duration
+	lastSweep time.Time
 }
 
 func newLoginLimiter(limit int, window time.Duration) *loginLimiter {
@@ -52,16 +54,50 @@ func (l *loginLimiter) allow(key string, now time.Time) bool {
 		}
 	}
 
-	if len(recent) >= l.limit {
-		l.attempts[key] = recent
-		return false
+	allowed := len(recent) < l.limit
+	if allowed {
+		recent = append(recent, now)
 	}
+	l.attempts[key] = recent
 
-	l.attempts[key] = append(recent, now)
-	return true
+	l.sweep(now)
+
+	return allowed
 }
 
-var loginAttempts = newLoginLimiter(10, time.Minute)
+// sweep deletes every key whose attempts have all aged out of the window, so
+// the map does not grow without bound over the life of the process. It runs
+// under the same lock as allow, at most once per window, which keeps the cost
+// to O(keys) rarely rather than on every call.
+func (l *loginLimiter) sweep(now time.Time) {
+	if now.Sub(l.lastSweep) <= l.window {
+		return
+	}
+	l.lastSweep = now
+
+	cutoff := now.Add(-l.window)
+	for key, times := range l.attempts {
+		stale := true
+		for _, t := range times {
+			if t.After(cutoff) {
+				stale = false
+				break
+			}
+		}
+		if stale {
+			delete(l.attempts, key)
+		}
+	}
+}
+
+// Separate buckets so a login attacker cannot also exhaust the allowance for
+// changing a password or for the first-run setup wizard — each endpoint gets
+// its own budget.
+var (
+	loginAttempts          = newLoginLimiter(10, time.Minute)
+	passwordChangeAttempts = newLoginLimiter(10, time.Minute)
+	setupAttempts          = newLoginLimiter(10, time.Minute)
+)
 
 // errInvalidCredentials is the single message returned for every failed
 // login, whatever the actual reason: it must not tell an attacker whether the
@@ -101,18 +137,78 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
-	if !loginAttempts.allow(clientIP(r), time.Now()) {
-		utils.ResponseErrorStatus(w, errors.New("too many login attempts, try again later"), http.StatusTooManyRequests)
-		return
+// clientAddr resolves the address used to key a rate limiter. By default it is
+// identical to clientIP: RemoteAddr's host, which is the proxy's own address
+// when this service sits behind one — the safe default, because trusting a
+// forwarded header lets any client pick its own rate-limit bucket unless a
+// proxy that actually overwrites that header genuinely sits in front of this
+// process. That is exactly why honouring one is opt-in, off by default, and
+// configured by naming the exact header to trust rather than guessed.
+//
+// When TRUSTED_PROXY_HEADER names a header, its value is used instead. A
+// request can carry the named header as more than one line — some proxies
+// (nginx) merge a forwarded chain onto a single line, but others (HAProxy)
+// append a separate line of their own, leaving any client-supplied line
+// first. r.Header.Get only ever returns the first line, so this reads all of
+// them and takes the LAST line, then within that line the LAST
+// comma-separated entry — the one appended by the trusted proxy itself. Every
+// earlier entry, and every earlier line, was written by whoever made the
+// request and is freely spoofed. If the header is configured but absent or
+// empty on a given request, this falls back to clientIP rather than to a
+// shared empty key.
+func clientAddr(r *http.Request) string {
+	headerName := utils.GetEnv("TRUSTED_PROXY_HEADER", "")
+	if headerName == "" {
+		return clientIP(r)
 	}
+
+	values := r.Header.Values(headerName)
+	if len(values) == 0 {
+		return clientIP(r)
+	}
+
+	lastLine := values[len(values)-1]
+	parts := strings.Split(lastLine, ",")
+	last := strings.TrimSpace(parts[len(parts)-1])
+	if last == "" {
+		return clientIP(r)
+	}
+	return last
+}
+
+// loginKey combines the client address with the username being attempted, so
+// one abusive client cannot exhaust the login budget for a different account
+// that happens to share the same address (common behind NAT or a proxy).
+func loginKey(addr, username string) string {
+	return addr + "|" + username
+}
+
+func (c *Auth) Login(w http.ResponseWriter, r *http.Request) {
+	// Cap the body before decoding: the rate-limit check below now needs the
+	// username out of the body first, so every request — including one that
+	// will be refused as rate-limited — reaches the decoder. Without a limit
+	// that turns json.Decode into an uncapped read of an attacker-chosen body
+	// on an unauthenticated endpoint. 1 MiB is generous for a username and
+	// password.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		utils.ResponseError(w, err)
+	decodeErr := json.NewDecoder(r.Body).Decode(&body)
+
+	// Key on (client address, username): an address alone is shared by every
+	// user behind a NAT or a reverse proxy, so exhausting the budget for one
+	// account must not lock out a different one from the same address.
+	key := loginKey(clientAddr(r), strings.ToLower(strings.TrimSpace(body.Username)))
+	if !loginAttempts.allow(key, time.Now()) {
+		utils.ResponseErrorStatus(w, errors.New("too many login attempts, try again later"), http.StatusTooManyRequests)
+		return
+	}
+
+	if decodeErr != nil {
+		utils.ResponseError(w, decodeErr)
 		return
 	}
 
@@ -213,10 +309,13 @@ func (c *Auth) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verifying the current password is a password guess like any other, so it
-	// shares the login limiter. The check has to come *before* the comparison,
-	// otherwise a stolen session becomes an unthrottled oracle for the
-	// password it could not otherwise read.
-	if !loginAttempts.allow(clientIP(r), time.Now()) {
+	// has its own budget, keyed on the username rather than the address: this
+	// handler runs on an authenticated session, so the account being probed is
+	// already known, and it — not the caller's (possibly shared, possibly
+	// proxied) address — is the resource actually under attack. The check has
+	// to come *before* the comparison, otherwise a stolen session becomes an
+	// unthrottled oracle for the password it could not otherwise read.
+	if !passwordChangeAttempts.allow(username, time.Now()) {
 		utils.ResponseErrorStatus(w, errors.New("too many attempts, try again later"), http.StatusTooManyRequests)
 		return
 	}

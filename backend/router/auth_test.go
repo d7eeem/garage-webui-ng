@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +112,230 @@ func TestClientIPStripsPort(t *testing.T) {
 				t.Errorf("clientIP() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestLoginLimiterSweepsExpiredKeys: once a key's entries have all aged out of
+// the window, it must be deleted rather than lingering forever — a
+// long-running process seeing many distinct addresses must not accumulate one
+// map entry per address permanently.
+func TestLoginLimiterSweepsExpiredKeys(t *testing.T) {
+	limiter := newLoginLimiter(3, time.Minute)
+	t0 := time.Now()
+
+	if !limiter.allow("a", t0) {
+		t.Fatal("first attempt for key a: allow() = false, want true")
+	}
+	if got := len(limiter.attempts); got != 1 {
+		t.Fatalf("attempts map has %d keys after one attempt, want 1", got)
+	}
+
+	// Well past the window: a's only entry has fully expired. Driving allow
+	// for a different key with this later 'now' must trigger the sweep and
+	// remove a — no sleeping, the sweep is driven entirely off the explicit
+	// 'now' passed to allow.
+	later := t0.Add(2 * time.Minute)
+	if !limiter.allow("b", later) {
+		t.Fatal("first attempt for key b: allow() = false, want true")
+	}
+
+	if _, ok := limiter.attempts["a"]; ok {
+		t.Error("key a is still present after its entries fully expired and a sweep ran; want it deleted")
+	}
+	if got := len(limiter.attempts); got != 1 {
+		t.Errorf("attempts map has %d keys after sweep, want 1 (only b)", got)
+	}
+}
+
+// TestClientAddrDefaultUsesRemoteAddr: with TRUSTED_PROXY_HEADER unset (the
+// default), clientAddr must behave exactly like clientIP and ignore any
+// forwarded header a caller supplies — an untrusted client must not be able to
+// pick its own rate-limit bucket just by adding a header.
+func TestClientAddrDefaultUsesRemoteAddr(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	r.RemoteAddr = "203.0.113.9:5555"
+	r.Header.Set("X-Forwarded-For", "9.9.9.9")
+
+	if got, want := clientAddr(r), "203.0.113.9"; got != want {
+		t.Errorf("clientAddr() = %q, want %q (TRUSTED_PROXY_HEADER unset must ignore forwarded headers)", got, want)
+	}
+}
+
+// TestClientAddrTrustedProxyHeaderUsesLastHop: X-Forwarded-For is
+// append-only and client-writable at the head, so only the final entry was
+// added by infrastructure the operator has chosen to trust.
+func TestClientAddrTrustedProxyHeaderUsesLastHop(t *testing.T) {
+	t.Setenv("TRUSTED_PROXY_HEADER", "X-Forwarded-For")
+
+	r := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	r.RemoteAddr = "10.0.0.1:1"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4, 5.6.7.8")
+
+	if got, want := clientAddr(r), "5.6.7.8"; got != want {
+		t.Errorf("clientAddr() = %q, want %q (must use the last hop, not the client-supplied first entry)", got, want)
+	}
+}
+
+// TestClientAddrTrustedProxyHeaderDifferentAddresses: two requests arriving
+// through the same proxy (same RemoteAddr) but with different last-hop
+// addresses in the trusted header must get separate rate-limit keys.
+func TestClientAddrTrustedProxyHeaderDifferentAddresses(t *testing.T) {
+	t.Setenv("TRUSTED_PROXY_HEADER", "X-Forwarded-For")
+
+	r1 := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	r1.RemoteAddr = "10.0.0.1:1"
+	r1.Header.Set("X-Forwarded-For", "1.1.1.1")
+
+	r2 := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	r2.RemoteAddr = "10.0.0.1:1" // same proxy address for both requests
+	r2.Header.Set("X-Forwarded-For", "2.2.2.2")
+
+	a1, a2 := clientAddr(r1), clientAddr(r2)
+	if a1 == a2 {
+		t.Fatalf("clientAddr() gave the same key for two different last-hop addresses: %q", a1)
+	}
+	if a1 != "1.1.1.1" || a2 != "2.2.2.2" {
+		t.Errorf("clientAddr() = %q, %q; want 1.1.1.1, 2.2.2.2", a1, a2)
+	}
+}
+
+// TestClientAddrTrustedProxyHeaderFallsBackWhenAbsent: a header that is
+// configured but missing on a given request must fall back to RemoteAddr, not
+// collapse every such request onto one shared empty key.
+func TestClientAddrTrustedProxyHeaderFallsBackWhenAbsent(t *testing.T) {
+	t.Setenv("TRUSTED_PROXY_HEADER", "X-Forwarded-For")
+
+	r := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	r.RemoteAddr = "203.0.113.50:1"
+	// The header is deliberately not set on this request.
+
+	if got, want := clientAddr(r), "203.0.113.50"; got != want {
+		t.Errorf("clientAddr() = %q, want %q (must fall back to RemoteAddr when the configured header is absent)", got, want)
+	}
+}
+
+// TestClientAddrTrustedProxyHeaderUsesLastLine: some proxies (HAProxy) append
+// their own X-Forwarded-For line rather than merging into an existing one,
+// leaving any client-supplied line first. r.Header.Get only ever returns the
+// first line, so a naive implementation would let the client's own line win —
+// exactly the spoof the "last hop" rule exists to prevent. clientAddr must
+// read every line (r.Header.Values) and use the last one.
+func TestClientAddrTrustedProxyHeaderUsesLastLine(t *testing.T) {
+	t.Setenv("TRUSTED_PROXY_HEADER", "X-Forwarded-For")
+
+	r := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	r.RemoteAddr = "10.0.0.1:1"
+	// A spoofed line arrives first, as it would through a proxy that appends
+	// its own header line rather than merging into the client's.
+	r.Header.Add("X-Forwarded-For", "6.6.6.6")
+	r.Header.Add("X-Forwarded-For", "1.2.3.4, 5.6.7.8")
+
+	if got, want := clientAddr(r), "5.6.7.8"; got != want {
+		t.Errorf("clientAddr() = %q, want %q (must use the last entry of the last header line, not the client-supplied first line)", got, want)
+	}
+}
+
+// TestLoginLimiterIsolatesUsernamesAtSameAddress is the core regression this
+// plan fixes: behind a reverse proxy, every request arrives from the same
+// address, so keying the login limiter on the address alone would let one
+// attacker's failed attempts against account A lock out account B too, even
+// though B never made a single bad attempt.
+func TestLoginLimiterIsolatesUsernamesAtSameAddress(t *testing.T) {
+	st := newTestStore(t)
+	ctx := t.Context()
+
+	if _, err := st.CreateUser(ctx, "alice", "alice-s3cret-password", store.RoleAdmin); err != nil {
+		t.Fatalf("CreateUser(alice): %v", err)
+	}
+	if _, err := st.CreateUser(ctx, "bob", "bob-s3cret-password", store.RoleAdmin); err != nil {
+		t.Fatalf("CreateUser(bob): %v", err)
+	}
+
+	sessMgr := utils.InitSessionManager()
+	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).Login))
+
+	const sameAddr = "198.51.100.77:1"
+
+	login := func(username, password string) int {
+		reqBody, err := json.Marshal(map[string]string{"username": username, "password": password})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(reqBody))
+		req.RemoteAddr = sameAddr
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// Exhaust the budget for alice with wrong passwords, all arriving from the
+	// same RemoteAddr — simulating every request arriving from one reverse
+	// proxy.
+	for i := 0; i < 10; i++ {
+		if code := login("alice", "wrong-password"); code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d against alice: status = %d, want 401", i+1, code)
+		}
+	}
+	if code := login("alice", "wrong-password"); code != http.StatusTooManyRequests {
+		t.Fatalf("alice's budget: status = %d, want 429 (limiter should now refuse alice)", code)
+	}
+
+	// bob, from the same address, must be unaffected by alice's exhausted
+	// budget.
+	if code := login("bob", "bob-s3cret-password"); code != http.StatusOK {
+		t.Fatalf("bob from the same address as the exhausted alice: status = %d, want 200 (bob must not be locked out by alice's attempts)", code)
+	}
+}
+
+// TestLoginAndPasswordChangeBucketsAreIndependent: exhausting the Login
+// limiter must not also refuse ChangePassword — they are separate budgets, so
+// a login attacker cannot lock a legitimate signed-in user out of changing
+// their password.
+func TestLoginAndPasswordChangeBucketsAreIndependent(t *testing.T) {
+	st := newTestStore(t)
+	const password = "alice-current-password"
+	if _, err := st.CreateUser(t.Context(), "alice", password, store.RoleAdmin); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	sessMgr := utils.InitSessionManager()
+	loginHandler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).Login))
+
+	const addr = "198.51.100.88:1"
+	login := func() int {
+		reqBody, err := json.Marshal(map[string]string{"username": "alice", "password": "wrong-password"})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(reqBody))
+		req.RemoteAddr = addr
+		w := httptest.NewRecorder()
+		loginHandler.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for i := 0; i < 10; i++ {
+		if code := login(); code != http.StatusUnauthorized {
+			t.Fatalf("login attempt %d: status = %d, want 401", i+1, code)
+		}
+	}
+	if code := login(); code != http.StatusTooManyRequests {
+		t.Fatalf("login budget: status = %d, want 429", code)
+	}
+
+	// ChangePassword, for the same account and address, must still work: it is
+	// a separate budget (passwordChangeAttempts), not the exhausted
+	// loginAttempts bucket.
+	rec := changePassword(t, "alice", addr, map[string]string{
+		"currentPassword": password,
+		"newPassword":     "alice-brand-new-password",
+		"confirmPassword": "alice-brand-new-password",
+	})
+	if rec.Code == http.StatusTooManyRequests {
+		t.Fatalf("ChangePassword was refused after Login's budget was exhausted: status = %d, want != 429", rec.Code)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ChangePassword status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -605,5 +830,30 @@ func TestLoginWithoutStore(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// TestLoginRejectsOversizedBody: keying the rate limiter on the username
+// means every request now reaches the JSON decoder, including one that will
+// ultimately be refused. Without a cap on the body, that decode is an
+// unbounded read of an attacker-chosen body on an unauthenticated endpoint.
+// The oversized body must surface through the same decode-error response
+// path as any other malformed body — it must not authenticate, and it must
+// not succeed.
+func TestLoginRejectsOversizedBody(t *testing.T) {
+	sessMgr := utils.InitSessionManager()
+	handler := sessMgr.LoadAndSave(http.HandlerFunc((&Auth{}).Login))
+
+	oversized := `{"username":"alice","password":"` + strings.Repeat("x", 2<<20) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(oversized))
+	req.RemoteAddr = "203.0.113.60:1"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("oversized body: status = %d, want a failure status, not 200", w.Code)
+	}
+	if cookie := w.Header().Get("Set-Cookie"); cookie != "" {
+		t.Errorf("oversized body set a cookie: %q", cookie)
 	}
 }
