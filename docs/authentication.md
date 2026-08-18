@@ -342,9 +342,18 @@ password field of any kind.
 | Errors | `401` · `403` · `500` |
 
 An administrator resetting someone else's password does **not** need the old
-one — that is the escape hatch for a locked-out colleague. It deliberately does
-not invalidate the target's existing sessions; disable the account if those must
-die immediately.
+one — that is the escape hatch for a locked-out colleague. Resetting the
+password does not by itself end the target's existing sessions — the password
+hash is not part of what a session is revalidated against — so if a session
+must be cut off, disable or delete the account (or demote it) instead.
+
+Every authenticated request is revalidated against the user store, not just
+trusted from the session established at login: disabling, deleting or
+changing an account's role takes effect within 5 seconds — a short cache
+(`backend/middleware/auth.go`) that keeps that check off the single-connection
+SQLite pool — rather than instantly. That is a bounded delay, not instant
+revocation, but it is a world away from the 24-hour session lifetime a purely
+session-based check would otherwise allow.
 
 Renames and password resets never remove administrative access, so the lockout
 guards never block them.

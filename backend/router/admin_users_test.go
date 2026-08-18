@@ -196,6 +196,7 @@ func TestAdminUsersRequireAdminRole(t *testing.T) {
 func TestAdminUsersAuthorizationEndToEnd(t *testing.T) {
 	st := newTestStore(t)
 	seedUser(t, st, "alice", "alice-s3cret-password", store.RoleAdmin)
+	seedUser(t, st, "bob", "bob-s3cret-password", store.RoleViewer)
 
 	// serve wraps the whole API router. The identity, if any, is put into the
 	// session between LoadAndSave and the router, so AuthMiddleware sees it.
