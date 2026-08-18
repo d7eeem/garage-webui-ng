@@ -327,6 +327,21 @@ toolchain was available.
     `src/pages/buckets/manage/overview/overview-website-access.tsx`). Not yet
     triaged one by one.
 
+## Finding from the self-hosted CI bring-up (2026-08-18, unplanned)
+
+`TestResolveUploadContentType/empty_content-type_resolves_ico` failed on the
+self-hosted runner because Go's `mime.TypeByExtension` resolves `.ico` from the
+**system mime database** (`/etc/mime.types`), which minimal containers lack —
+and `.ico` is not in Go's built-in fallback table. The runner got the
+`media-types` package as a workaround, but the finding is bigger than CI: **the
+production image is `scratch`-based and has no mime database either**, so plan
+038's `.ico` fallback in `resolveUploadContentType` (browse.go) silently
+resolves to nothing in the shipped Docker image — exactly the environment the
+helper was added for. Proper fix (one line, needs a plan or a quick follow-up):
+register the type deterministically at init, e.g.
+`mime.AddExtensionType(".ico", "image/vnd.microsoft.icon")`, which also makes
+the test environment-independent.
+
 ## Dependency audit (run 2026-07-30, after `node_modules` became available)
 
 The original audit could not run `pnpm audit` (no `node_modules`). Now closed:
