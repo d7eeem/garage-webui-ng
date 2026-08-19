@@ -75,7 +75,7 @@ pipeline {
         IMAGE = 'ghcr.io/d7eeem/garage-webui-ng'
       }
       steps {
-        withCredentials([usernamePassword(credentialsId: 'github-pat',
+        withCredentials([usernamePassword(credentialsId: 'ghcr-pat',
             usernameVariable: 'REG_USER', passwordVariable: 'REG_TOKEN')]) {
           sh 'echo "$REG_TOKEN" | docker login ghcr.io -u "$REG_USER" --password-stdin'
         }
